@@ -387,6 +387,8 @@ public void test22() {
 > 汇聚操作, 遍历流中的元素, 结果作为下一个元素的参数
 >
 > 可以指定初始值, 在初始值上进行操作
+>
+> reduce, 三个参数的重载, 只对并行流有影响, 后面两个二元运算函数, 必须兼容
 
 ```java
 public void test27() {
@@ -401,7 +403,8 @@ public void test27() {
                     (list, item) -> {
                         list.add(item);
                         return list;
-                    }, (list1, list2) -> {
+                        // fork1 和 fork2 代表 并行流的两个子任务(并行流使用了ForkJion)
+                    }, (fork1, fork2) -> {
                         return null;
                     }));
 }
@@ -409,7 +412,361 @@ public void test27() {
 
 # Collectors
 
+> 该类就是为了收集流中的元素而诞生的
+>
+> Collectors提供了丰富的收集器, 可以按不同要求收集结果
 
+### toCollection
+
+> 将指定集合转换为收集器
+
+```java
+public void test19() {
+    TreeSet<Integer> treeSet = Stream.of(1, 2, 3, 4)
+            .collect(Collectors.toCollection(TreeSet::new));
+    treeSet.forEach(item -> System.out.print(item + " "));
+}
+```
+
+### toList
+
+> 将流中元素包装成一个List
+
+### toSet
+
+> 将流中元素包装成一个Set
+
+### toMap
+
+> 将流中元素包装成一个Map
+>
+> 需要映射key和value
+>
+> 可以在遍历过程中, 执行二元运算函数
+>
+> 也可以指定Map收集
+
+```java
+public void test20() {
+    Map<Integer, Integer> map = Stream.of(1, 2, 3, 4, 5)
+        .collect(Collectors.toMap(item -> item + 1, item -> item));
+    System.out.println(map);
+
+    Map<String, String> map1 = Stream.of(1, 2, 3, 4, 5)
+        .map(String::valueOf)
+        .collect(Collectors.toMap(item -> item + "-key", item -> item + "-value", (a, b) -> {
+            a = a.concat("-a");
+            b = b.concat("-b");
+            return null;
+        }));
+    System.out.println(map1);
+
+    Map<String, String> map2 = Stream.of(1, 2, 3, 4, 5)
+        .map(String::valueOf)
+        .collect(Collectors.toMap(item -> item + "-key", item -> item + "-value",
+                                  (a, b) -> {
+                                      a = a.concat("-a");
+                                      b = b.concat("-b");
+                                      return null;
+                                  }, ConcurrentHashMap::new));
+
+    System.out.println(map2);
+}
+```
+
+### toConcurrentMap
+
+> 将流中元素包装成一个线程安全的Map, 调用toMap方法, 指定线程安全的Map, 可以达到同样的效果
+
+### toUnmodifiableList
+
+> 将流中元素包装成一个不可修改的List
+
+### toUnmodifiableSet
+
+> 将流中元素包装成一个不可修改的Set
+
+### toUnmodifiableMap
+
+> 将流中元素包装成一个不可修改的Map
+
+### averagingDouble
+
+> 遍历流中的数据, 每次返回一个Double值, 最后计算出平均值
+
+```java
+public void test01() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+                       .collect(Collectors.averagingDouble(Double::valueOf)));
+}
+```
+
+### averagingInt
+
+### averagingLong
+
+### summingInt
+
+> 映射流中每个元素返回一个Int, 将所有int汇总
+
+```java
+public void test17() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.summingInt(item -> item + 10)));
+}
+```
+
+### summingDouble
+
+### summingLong
+
+### summarizingInt
+
+> 映射流中每个元素返回一个int, 返回一个包含 数量, 总和, 最小值, 最大值, 平均值
+
+```java
+public void test18() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.summarizingInt(item -> item + 10)));
+}
+```
+
+### summarizingDouble
+
+### summarizingLong
+
+### collectingAndThen
+
+> 用给定容器收集元素, 收集完成后, 执行一个操作, 返回结果
+
+```java
+public void test02() {
+    Stream.of(1, 2, 3, 4, 1, 5, 6)
+        .collect(Collectors.collectingAndThen(
+            Collectors.toCollection(ArrayList::new),
+            (list) -> {
+                list.add(999);
+                return list;
+            }
+        )).forEach(item -> System.out.print(item + " "));
+}
+```
+
+### counting
+
+> 返回集合中元素的数量
+
+```java
+public void test03() {
+    System.out.println(Stream.of(1, 2, 3, 4, "1").collect(Collectors.counting()));
+}
+```
+
+### filtering
+
+> 只有满足条件的元素, 才会被用指定容器收集
+
+```java
+public void test04() {
+    System.out.println(Arrays.toString(Stream.of(1, 2, 3, 4, 5)
+                                       .collect(Collectors.filtering(item -> item > 2, Collectors.toCollection(ArrayList::new))).toArray()));
+}
+```
+
+### flatMapping
+
+> 遍历流, 将每个元素转换成流, 最后用指定收集器收集元素
+
+```java
+public void test05() {
+    System.out.println(Arrays.toString(Stream.of(1, 2, 3, 4, 5)
+		.collect(Collectors.flatMapping(item -> Stream.of(++item),
+			Collectors.toCollection(ArrayList::new))).toArray()));
+}
+```
+
+### mapping
+
+> 遍历流, 对每个元素进行操作, 返回操作后的结果, 用指定容器收集起来
+
+```java
+public void test06() {
+    System.out.println(Arrays.toString(Stream.of(1, 2, 3, 4, 5)
+            .collect(Collectors.mapping(item -> ++item, Collectors.toCollection(ArrayList::new)))
+            .toArray()));
+}
+```
+
+### groupingBy
+
+> 遍历流, 根据每次遍历的结果分组
+
+- groupingBy(Fuction<? super T,? extends K> classifier)
+
+  - ```java
+    public void test07() {
+        Map<String, List<Integer>> map = Stream.of(1, 2, 3, 4, 5)
+                .collect(Collectors.groupingBy(item -> {
+                    if (item < 3) {
+                        return "第一组";
+                    } else {
+                        return "第二组";
+                    }
+                }));
+    
+        System.out.println(map);
+    }
+    ```
+
+- groupingBy(Function<? super T,? extends K> classifier, Collector<? super T,A,D> downstream)
+
+  - > 使用收集器分组
+
+  - ```java
+    public void test08() {
+        Map<String, List<Integer>> map = Stream.of(1, 2, 3, 4, 5)
+            .collect(Collectors.groupingBy(item -> {
+                if (item < 3) {
+                    return "第一组";
+                } else {
+                    return "第二组";
+                }
+            }, Collectors.toCollection(Vector::new)));
+    
+        System.out.println(map);
+    }
+    ```
+
+- groupingBy(Function<? super T,? extends K> classifier, Suppiler\<M\> mapFactory, Collector<? super T,A,D> downstream)
+
+  - > 使用指定map映射, 指定收集器
+
+  - ```java
+    public void test09() {
+        Map<String, List<Integer>> map = Stream.of(1, 2, 3, 4, 5)
+            .collect(Collectors.groupingBy(item -> {
+                if (item < 3) {
+                    return "第一组";
+                } else {
+                    return "第二组";
+                }
+            }, ConcurrentHashMap::new,Collectors.toCollection(Vector::new)));
+    
+        System.out.println(map);
+    }
+    ```
+
+### groupingByConcurrent
+
+> 同上, 也是分组, 返回线程安全map, 调用groupingBy方法传入线程安全的集合, 效果是一样的, 这个方法更加语义化
+
+### joining
+
+> 将字符序列流, 连接, 返回一个字符序列
+
+- joining()
+
+  - > 直接连接字符序列流
+
+  - ```java
+    public void test11() {
+        System.out.println(Stream.of(1, 2, 3, 4)
+                           .map(String::valueOf)
+                           .collect(Collectors.joining()));
+    }
+    ```
+
+- joining(CharSequence delimiter)
+
+  - > 用指定字符序列, 连接流中元素
+
+  - ```java
+    public void test11() {
+        System.out.println(Stream.of(1, 2, 3, 4)
+                           .map(String::valueOf)
+                           .collect(Collectors.joining("-")));
+    }
+    ```
+
+- joining(CharSequence delimiter, CharSequence prefix, CharSequence suffix)
+
+  - > 用指定字符序列, 连接流中元素, 给结果加上一个前缀和后缀
+
+  - ```java
+    public void test12() {
+        System.out.println(Stream.of(1, 2, 3, 4, 5)
+                           .map(String::valueOf)
+                           .collect(Collectors.joining(", ", "[", "]")));
+    }
+    ```
+
+### maxBy
+
+> 按照指定比较器, 比较元素, 返回最大值
+
+```java
+public void test13() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.maxBy(Comparator.naturalOrder())).get());
+}
+```
+
+### minBy
+
+### partitioningBy
+
+- partitioningBy(Predicate<? super T> predicate)
+
+  - > 根据true, false, 分区, 就是只有固定两组的groupingBy
+
+  - ```java
+    public void test14() {
+        Map<Boolean, List<Integer>> map = Stream.of(1, 2, 3, 4, 5)
+            .collect(Collectors.partitioningBy(item -> item < 3));
+        System.out.println(map);
+    }
+    ```
+
+- partitioningBy(predicate<? super T> predicate, Collector<?  super T,A,D>  downstream)
+
+  - > 根据true, false分区, 使用指定收集器收集
+
+  - ```java
+    public void test15() {
+        Map<Boolean, Stack<Integer>> map = Stream.of(1, 2, 3, 4, 5)
+            .collect(Collectors.partitioningBy(item -> item < 3, Collectors.toCollection(Stack::new)));
+        System.out.println(map);
+    }
+    ```
+
+### reducing
+
+> 汇聚操作, 与reduce类似
+
+```java
+public void test16() {
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.reducing(Integer::sum)).get());
+
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.reducing(10, Integer::sum)));
+
+    System.out.println(Stream.of(1, 2, 3, 4, 5)
+                       .collect(Collectors.reducing( 0, item -> ++item, (a, b) -> a + b)));;
+}
+```
+
+# BaseStream
+
+# IntStream
+
+# DoubleStream
+
+# LongStream
+
+# ParallelStream
+
+# [先挖一个坑, 以后再填.....]()
 
 
 
