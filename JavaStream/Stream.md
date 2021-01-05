@@ -87,6 +87,23 @@ public void test17() {
 
 > 将多参列表中元素构建成流
 
+### Stream.ofNullable
+
+> Stream.of中如果只存一个null, 会NullPointerException
+>
+> Stream.ofNullable中只存一个null, 不会NullPointerException, 而是会返回一个empty流
+
+```java
+public void test31() {
+    try {
+        System.out.println(Stream.of(null).count());// Exception
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    System.out.println(Stream.ofNullable(null).count());
+}
+```
+
 ## 中间操作
 
 ### distinct
@@ -224,6 +241,28 @@ public void test24() {
 ```java
 public void test26() {
     System.out.println(Arrays.toString(Stream.of(1, 2, 3, 4).peek(System.out::println).toArray()));
+}
+```
+
+### takeWhile
+
+> 如果是有序流, 则顺序获取一个满足条件的元素, 非顺序流随机获取一个满足条件的元素, 不建议在并行流中使用, 性能极低
+
+```java
+public void test30() {
+    Stream.of(2, 1, 3, 4, 2, 2, 2, 2, 312, 11, 0, 0)
+        .takeWhile(item -> item == 2).forEach(item -> System.out.println(item + " "));
+}
+```
+
+### dropWhile
+
+>如果是有序流, 则顺序删除一个满足条件的元素, 非顺序流随机删除一个满足条件的元素, 不建议在并行流中使用, 性能极低
+
+```java
+public void test29() {
+    Stream.of(2, 1, 3, 4, 2, 2, 2, 2, 312, 11, 0, 0)
+        .dropWhile(item -> item == 2).forEach(item -> System.out.print(item + " "));
 }
 ```
 
@@ -756,13 +795,17 @@ public void test16() {
 }
 ```
 
-# BaseStream
+# Other Stream
 
-# IntStream
+## BaseStream
 
-# DoubleStream
+## DoubleStream
 
-# LongStream
+## IntStream
+
+## LongStream
+
+## ParallelStream
 
 # ParallelStream
 
