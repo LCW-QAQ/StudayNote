@@ -799,7 +799,86 @@ public void test16() {
 
 ## BaseStream
 
+### close
+
+> 关闭流
+
+### isParallel
+
+> 判断是否是并行流
+
+### iterator
+
+> 返回当前流的迭代器
+
+```java
+public void test01() {
+    Iterator<Integer> it = Stream.of(1, 2, 3, 4, 5).iterator();
+    while(it.hasNext()) {
+        int cur = it.next();
+        if(cur != 4) {
+            System.out.print(cur + " ");
+        }
+    }
+}
+```
+
+### onClose
+
+> 在流关闭时被调用(手动关闭), 平常使用流都必须要关闭
+
+### parallel
+
+> 返回并行流
+
+### sequential
+
+> 返回一个有序流
+
+### unordered
+
+> 返回一个无序流
+
+### spliterator
+
+> 返回一个可拆分的迭代器, JDK8中出现的新接口, 为了实现多线程计算, 充分利用多线程提高性能
+
 ## DoubleStream
+
+### average
+
+> 返回流中所有元素的平均值
+
+### max
+
+> 返回流中的最大值
+
+### min
+
+> 返回流中的最小值
+
+### sum
+
+> 返回流中元素的总和
+
+### summaryStatistics
+
+> 返回流中的总计摘要, (数量, 总和, 最小值, 最大值, 平均值)
+
+### mapToObj
+
+> 将流中元素映射成其他Obj类型
+
+### boxed
+
+> 将流转换成T类型的 Stream 流
+
+```java
+public void test07() {
+    DoubleStream.of(1, 2, 3, 4, 5)
+        .boxed().forEach(item -> System.out.print(item + " "));
+}
+```
 
 ## IntStream
 
