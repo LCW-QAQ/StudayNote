@@ -1,0 +1,24 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+D:/Note/CPP/DemoCPP/EnumDemo/enum_demo1.h
+iostream
+-
+
+D:/Note/CPP/DemoCPP/feizi.h
+iostream
+-
+
+D:/Note/CPP/DemoCPP/main.cpp
+iostream
+-
+feizi.h
+D:/Note/CPP/DemoCPP/feizi.h
+./EnumDemo/enum_demo1.h
+D:/Note/CPP/DemoCPP/EnumDemo/enum_demo1.h
+

@@ -1,0 +1,97 @@
+The system is: Windows - 10.0.18363 - AMD64
+Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+Compiler: E:/Program Files/Microsoft/VisualStudio/VC/Tools/MSVC/14.27.29110/bin/Hostx86/x86/cl.exe 
+Build flags: 
+Id flags:  
+
+The output was:
+0
+用于 x86 的 Microsoft (R) C/C++ 优化编译器 19.27.29112 版
+版权所有(C) Microsoft Corporation。保留所有权利。
+
+CMakeCCompilerId.c
+Microsoft (R) Incremental Linker Version 14.27.29112.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:CMakeCCompilerId.exe 
+CMakeCCompilerId.obj 
+
+
+Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.exe"
+
+Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.obj"
+
+The C compiler identification is MSVC, found in "D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/3.17.3/CompilerIdC/CMakeCCompilerId.exe"
+
+Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+Compiler: E:/Program Files/Microsoft/VisualStudio/VC/Tools/MSVC/14.27.29110/bin/Hostx86/x86/cl.exe 
+Build flags: 
+Id flags:  
+
+The output was:
+0
+用于 x86 的 Microsoft (R) C/C++ 优化编译器 19.27.29112 版
+版权所有(C) Microsoft Corporation。保留所有权利。
+
+CMakeCXXCompilerId.cpp
+Microsoft (R) Incremental Linker Version 14.27.29112.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:CMakeCXXCompilerId.exe 
+CMakeCXXCompilerId.obj 
+
+
+Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.exe"
+
+Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.obj"
+
+The CXX compiler identification is MSVC, found in "D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/3.17.3/CompilerIdCXX/CMakeCXXCompilerId.exe"
+
+Determining if the C compiler works passed with the following output:
+Change Dir: D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/CMakeTmp
+
+Run Build Command(s):nmake /nologo cmTC_c50ef\fast && 	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\HostX86\x86\nmake.exe"  -f CMakeFiles\cmTC_c50ef.dir\build.make /nologo -L                  CMakeFiles\cmTC_c50ef.dir\build
+Building C object CMakeFiles/cmTC_c50ef.dir/testCCompiler.c.obj
+	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\cl.exe" @C:\Users\Lenovo\AppData\Local\Temp\nm1DD6.tmp
+testCCompiler.c
+Linking C executable cmTC_c50ef.exe
+	"E:\Jetbrains\CLion 2020.2.4\bin\cmake\win\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_c50ef.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\mt.exe --manifests  -- "E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\link.exe" /nologo @CMakeFiles\cmTC_c50ef.dir\objects1.rsp @C:\Users\Lenovo\AppData\Local\Temp\nm1E34.tmp
+
+
+
+Detecting C compiler ABI info compiled with the following output:
+Change Dir: D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/CMakeTmp
+
+Run Build Command(s):nmake /nologo cmTC_e76d4\fast && 	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\HostX86\x86\nmake.exe"  -f CMakeFiles\cmTC_e76d4.dir\build.make /nologo -L                  CMakeFiles\cmTC_e76d4.dir\build
+Building C object CMakeFiles/cmTC_e76d4.dir/CMakeCCompilerABI.c.obj
+	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\cl.exe" @C:\Users\Lenovo\AppData\Local\Temp\nm20D3.tmp
+CMakeCCompilerABI.c
+Linking C executable cmTC_e76d4.exe
+	"E:\Jetbrains\CLion 2020.2.4\bin\cmake\win\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_e76d4.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\mt.exe --manifests  -- "E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\link.exe" /nologo @CMakeFiles\cmTC_e76d4.dir\objects1.rsp @C:\Users\Lenovo\AppData\Local\Temp\nm2142.tmp
+
+
+
+Determining if the CXX compiler works passed with the following output:
+Change Dir: D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/CMakeTmp
+
+Run Build Command(s):nmake /nologo cmTC_f81dd\fast && 	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\HostX86\x86\nmake.exe"  -f CMakeFiles\cmTC_f81dd.dir\build.make /nologo -L                  CMakeFiles\cmTC_f81dd.dir\build
+Building CXX object CMakeFiles/cmTC_f81dd.dir/testCXXCompiler.cxx.obj
+	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\cl.exe" @C:\Users\Lenovo\AppData\Local\Temp\nm2400.tmp
+testCXXCompiler.cxx
+Linking CXX executable cmTC_f81dd.exe
+	"E:\Jetbrains\CLion 2020.2.4\bin\cmake\win\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_f81dd.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\mt.exe --manifests  -- "E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\link.exe" /nologo @CMakeFiles\cmTC_f81dd.dir\objects1.rsp @C:\Users\Lenovo\AppData\Local\Temp\nm247E.tmp
+
+
+
+Detecting CXX compiler ABI info compiled with the following output:
+Change Dir: D:/Note/CPP/ArrayAndLoopExercise/cmake-build-debug/CMakeFiles/CMakeTmp
+
+Run Build Command(s):nmake /nologo cmTC_326c8\fast && 	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\HostX86\x86\nmake.exe"  -f CMakeFiles\cmTC_326c8.dir\build.make /nologo -L                  CMakeFiles\cmTC_326c8.dir\build
+Building CXX object CMakeFiles/cmTC_326c8.dir/CMakeCXXCompilerABI.cpp.obj
+	"E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\cl.exe" @C:\Users\Lenovo\AppData\Local\Temp\nm271D.tmp
+CMakeCXXCompilerABI.cpp
+Linking CXX executable cmTC_326c8.exe
+	"E:\Jetbrains\CLion 2020.2.4\bin\cmake\win\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_326c8.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100183~1.0\x86\mt.exe --manifests  -- "E:\Program Files\Microsoft\VisualStudio\VC\Tools\MSVC\14.27.29110\bin\Hostx86\x86\link.exe" /nologo @CMakeFiles\cmTC_326c8.dir\objects1.rsp @C:\Users\Lenovo\AppData\Local\Temp\nm278B.tmp
+
+
+

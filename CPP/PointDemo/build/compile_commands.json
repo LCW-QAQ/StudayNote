@@ -1,0 +1,12 @@
+[
+{
+  "directory": "D:/Note/CPP/PointDemo/build",
+  "command": "\"E:\\Program Files\\mingw64\\bin\\g++.exe\"   -g -o CMakeFiles\\main.dir\\main.obj -c D:\\Note\\CPP\\PointDemo\\main.cpp",
+  "file": "D:/Note/CPP/PointDemo/main.cpp"
+},
+{
+  "directory": "D:/Note/CPP/PointDemo/build",
+  "command": "\"E:\\Program Files\\mingw64\\bin\\g++.exe\"   -g -o CMakeFiles\\main.dir\\util\\PointUtil.obj -c D:\\Note\\CPP\\PointDemo\\util\\PointUtil.cpp",
+  "file": "D:/Note/CPP/PointDemo/util/PointUtil.cpp"
+}
+]

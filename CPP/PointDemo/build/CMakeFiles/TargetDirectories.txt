@@ -1,0 +1,3 @@
+D:/Note/CPP/PointDemo/build/CMakeFiles/edit_cache.dir
+D:/Note/CPP/PointDemo/build/CMakeFiles/main.dir
+D:/Note/CPP/PointDemo/build/CMakeFiles/rebuild_cache.dir

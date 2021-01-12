@@ -1,0 +1,24 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+D:/Note/CPP/PointDemo/main.cpp
+iostream
+-
+util/PointUtil.h
+D:/Note/CPP/PointDemo/util/PointUtil.h
+
+D:/Note/CPP/PointDemo/util/PointUtil.cpp
+PointUtil.h
+D:/Note/CPP/PointDemo/util/PointUtil.h
+
+D:/Note/CPP/PointDemo/util/PointUtil.h
+iostream
+-
+string
+-
+
