@@ -147,7 +147,7 @@ select c.c_id,
 from course c
          left join score s on c.c_id = s.c_id
 group by c.c_id;
--- 19、按各科成绩进行排序，并显示排名(实现不完全)
+-- 19、按各科成绩进行排序，并显示排名(实现不完全) *****************************************************************************
 -- mysql没有rank函数
 # select a.s_id,a.c_id,
 #         @i:=@i + 1 as i保留排名,
@@ -241,13 +241,22 @@ select s.s_id,s.c_id,s.s_score,
 order by s.c_id, s.s_score desc;
 
 -- 20、查询学生的总成绩并进行排名
+# select a.s_id,
+#     @i:=@i+1 as i,
+#     @k:=(case when @score=a.sum_score then @k else @i end) as rank,
+#     @score:=a.sum_score as score
+# from (select s_id,SUM(s_score) as sum_score from score GROUP BY s_id ORDER BY sum_score DESC) a,
+#     (select @k:=0,@i:=0,@score:=0);
 select a.s_id,
-    @i:=@i+1 as i,
-    @k:=(case when @score=a.sum_score then @k else @i end) as rank,
-    @score:=a.sum_score as score
-from (select s_id,SUM(s_score) as sum_score from score GROUP BY s_id ORDER BY sum_score DESC)a,
-    (select @k:=0,@i:=0,@score:=0)s
--- 21、查询不同老师所教不同课程平均分从高到低显示 
+       IF(@pre_score = a.sum_score, @ranking, @ranking := @ranking + 1) ranking,
+       @pre_score := a.sum_score
+from (select s.s_id,
+             sum(s.s_score) sum_score
+      from score s
+      group by s.s_id
+      order by sum_score desc) a,
+     (select @ranking := 0, @pre_score := NULL) vt;
+-- 21、查询不同老师所教不同课程平均分从高到低显示
     select a.t_id,c.t_name,a.c_id,ROUND(avg(s_score),2) as avg_score from course a
         left join score b on a.c_id=b.c_id
         left join teacher c on a.t_id=c.t_id
