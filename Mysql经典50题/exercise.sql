@@ -257,75 +257,165 @@ from (select s.s_id,
       order by sum_score desc) a,
      (select @ranking := 0, @pre_score := NULL) vt;
 -- 21、查询不同老师所教不同课程平均分从高到低显示
-    select a.t_id,c.t_name,a.c_id,ROUND(avg(s_score),2) as avg_score from course a
-        left join score b on a.c_id=b.c_id
-        left join teacher c on a.t_id=c.t_id
-        GROUP BY a.c_id,a.t_id,c.t_name ORDER BY avg_score DESC;
--- 22、查询所有课程的成绩第2名到第3名的学生信息及该课程成绩 
-            select d.*,c.排名,c.s_score,c.c_id from (
-                select a.s_id,a.s_score,a.c_id,@i:=@i+1 as 排名 from score a,(select @i:=0)s where a.c_id='01'
-            )c
-            left join student d on c.s_id=d.s_id
-            where 排名 BETWEEN 2 AND 3
-            UNION
-            select d.*,c.排名,c.s_score,c.c_id from (
-                select a.s_id,a.s_score,a.c_id,@j:=@j+1 as 排名 from score a,(select @j:=0)s where a.c_id='02'
-            )c
-            left join student d on c.s_id=d.s_id
-            where 排名 BETWEEN 2 AND 3
-            UNION
-            select d.*,c.排名,c.s_score,c.c_id from (
-                select a.s_id,a.s_score,a.c_id,@k:=@k+1 as 排名 from score a,(select @k:=0)s where a.c_id='03'
-            )c
-            left join student d on c.s_id=d.s_id
-            where 排名 BETWEEN 2 AND 3;
--- 23、统计各科成绩各分数段人数：课程编号,课程名称,[100-85],[85-70],[70-60],[0-60]及所占百分比
-        select distinct f.c_name,a.c_id,b.`85-100`,b.百分比,c.`70-85`,c.百分比,d.`60-70`,d.百分比,e.`0-60`,e.百分比 from score a
-                left join (select c_id,SUM(case when s_score >85 and s_score <=100 then 1 else 0 end) as `85-100`,
-                                            ROUND(100*(SUM(case when s_score >85 and s_score <=100 then 1 else 0 end)/count(*)),2) as 百分比
-                                from score GROUP BY c_id)b on a.c_id=b.c_id
-                left join (select c_id,SUM(case when s_score >70 and s_score <=85 then 1 else 0 end) as `70-85`,
-                                            ROUND(100*(SUM(case when s_score >70 and s_score <=85 then 1 else 0 end)/count(*)),2) as 百分比
-                                from score GROUP BY c_id)c on a.c_id=c.c_id
-                left join (select c_id,SUM(case when s_score >60 and s_score <=70 then 1 else 0 end) as `60-70`,
-                                            ROUND(100*(SUM(case when s_score >60 and s_score <=70 then 1 else 0 end)/count(*)),2) as 百分比
-                                from score GROUP BY c_id)d on a.c_id=d.c_id
-                left join (select c_id,SUM(case when s_score >=0 and s_score <=60 then 1 else 0 end) as `0-60`,
-                                            ROUND(100*(SUM(case when s_score >=0 and s_score <=60 then 1 else 0 end)/count(*)),2) as 百分比
-                                from score GROUP BY c_id)e on a.c_id=e.c_id
-                left join course f on a.c_id = f.c_id
--- 24、查询学生平均成绩及其名次 
-        select a.s_id,
-                @i:=@i+1 as '不保留空缺排名',
-                @k:=(case when @avg_score=a.avg_s then @k else @i end) as '保留空缺排名',
-                @avg_score:=avg_s as '平均分'
-        from (select s_id,ROUND(AVG(s_score),2) as avg_s from score GROUP BY s_id)a,(select @avg_score:=0,@i:=0,@k:=0)b;
--- 25、查询各科成绩前三名的记录
-            -- 1.选出b表比a表成绩大的所有组
-            -- 2.选出比当前id成绩大的 小于三个的
-        select a.s_id,a.c_id,a.s_score from score a
-            left join score b on a.c_id = b.c_id and a.s_score<b.s_score
-            group by a.s_id,a.c_id,a.s_score HAVING COUNT(b.s_id)<3
-            ORDER BY a.c_id,a.s_score DESC
--- 26、查询每门课程被选修的学生数  
-        select c_id,count(s_id) from score a GROUP BY c_id
--- 27、查询出只有两门课程的全部学生的学号和姓名 
-        select s_id,s_name from student where s_id in(
-                select s_id from score GROUP BY s_id HAVING COUNT(c_id)=2);
--- 28、查询男生、女生人数 
-        select s_sex,COUNT(s_sex) as 人数  from student GROUP BY s_sex
--- 29、查询名字中含有"风"字的学生信息
-        select * from student where s_name like '%风%';
--- 30、查询同名同性学生名单，并统计同名人数 
-        select a.s_name,a.s_sex,count(*) from student a  JOIN
-                    student b on a.s_id !=b.s_id and a.s_name = b.s_name and a.s_sex = b.s_sex
-        GROUP BY a.s_name,a.s_sex
--- 31、查询1990年出生的学生名单 
-        select s_name from student where s_birth like '1990%'
--- 32、查询每门课程的平均成绩，结果按平均成绩降序排列，平均成绩相同时，按课程编号升序排列 
+select t.t_name, avg(s.s_score) vscore
+from score s
+         join course c on s.c_id = c.c_id
+         join teacher t on c.t_id = t.t_id
+group by t.t_id
+order by vscore desc;
+-- 22、查询所有课程的成绩第2名到第3名的学生信息及该课程成绩 *************************************
+# select d.*,c.排名,c.s_score,c.c_id from (
+#     select a.s_id,a.s_score,a.c_id,@i:=@i+1 as 排名 from score a,(select @i:=0)s where a.c_id='01'
+# )c
+# left join student d on c.s_id=d.s_id
+# where 排名 BETWEEN 2 AND 3
+# UNION
+# select d.*,c.排名,c.s_score,c.c_id from (
+#     select a.s_id,a.s_score,a.c_id,@j:=@j+1 as 排名 from score a,(select @j:=0)s where a.c_id='02'
+# )c
+# left join student d on c.s_id=d.s_id
+# where 排名 BETWEEN 2 AND 3
+# UNION
+# select d.*,c.排名,c.s_score,c.c_id from (
+#     select a.s_id,a.s_score,a.c_id,@k:=@k+1 as 排名 from score a,(select @k:=0)s where a.c_id='03'
+# )c
+# left join student d on c.s_id=d.s_id
+# where 排名 BETWEEN 2 AND 3;
+-- 用之前学过的子查询更加简单
+select s.*,
+       (select count(distinct sc.s_score) from score sc where sc.c_id = s.c_id and sc.s_score > s.s_score) + 1 ranking
+from score s
+order by s.c_id, s.s_score desc;
 
-    select c_id,ROUND(AVG(s_score),2) as avg_score from score GROUP BY c_id ORDER BY avg_score DESC,c_id ASC
--- 33、查询平均成绩大于等于85的所有学生的学号、姓名和平均成绩 
+select * from (select s.*,
+       (select count(distinct sc.s_score) from score sc where sc.c_id = s.c_id and sc.s_score > s.s_score) + 1 ranking
+from score s
+order by s.c_id, s.s_score desc) m
+where m.ranking between 2 and 3;
+
+-- 变量排名的方法
+select s.*,
+       IF(@pre_c_id = s.c_id, IF(@pre_score = s.s_score, @ranking, @ranking := @ranking + 1), @ranking := 1) ranking,
+       @pre_score := s.s_score pre_score,
+       @pre_c_id := s.c_id
+from score s, (select @ranking := 0, @pre_score := NULL, @pre_c_id := NULL) vt
+order by s.c_id,s.s_score desc;
+
+select * from (select s.*,
+       IF(@pre_c_id = s.c_id, IF(@pre_score = s.s_score, @ranking, @ranking := @ranking + 1), @ranking := 1) ranking,
+       @pre_score := s.s_score pre_score,
+       @pre_c_id := s.c_id
+from score s, (select @ranking := 0, @pre_score := NULL, @pre_c_id := NULL) vt
+order by s.c_id,s.s_score desc) m
+where m.ranking between 2 and 3;
+
+
+-- 23、统计各科成绩各分数段人数：课程编号,课程名称,[100-85],[85-70],[70-60],[0-60]及所占百分比 **********************************
+# 课程名称 课程编号 [100-85] [85-70] [70-60] [0-60]
+select c.c_name,c.c_id,
+       SUM(case when s.s_score >= 85 and s.s_score <= 100 then 1 else 0 end) as "[85,100]",
+       CONCAT(ROUND(SUM(case when s.s_score >= 85 and s.s_score <= 100 then 1 else 0 end)/count(*)*100, 2), '%') as Percent,
+       SUM(case when s.s_score >= 70 and s.s_score < 85 then 1 else 0 end) as "[70,85)",
+       CONCAT(ROUND(SUM(case when s.s_score >= 70 and s.s_score < 85 then 1 else 0 end)/count(*)*100, 2), '%') as Percent,
+       SUM(case when s.s_score >= 60 and s.s_score < 70 then 1 else 0 end) as "[60,70)",
+       CONCAT(ROUND(SUM(case when s.s_score >= 60 and s.s_score < 70 then 1 else 0 end)/count(*)*100, 2), '%') as Percent,
+       SUM(case when s.s_score >= 0 and s.s_score < 60 then 1 else 0 end) as "[0,60)",
+       CONCAT(ROUND(SUM(case when s.s_score >= 0 and s.s_score < 60 then 1 else 0 end)/count(*)*100, 2), '%') as Percent
+       from score s
+    join course c on s.c_id = c.c_id
+group by c.c_id;
+
+select m.c_id  课程编号  , m.c_name  课程名称  , (
+  case when n.s_score >= 85 then '85-100'
+       when n.s_score >= 70 and n.s_score < 85 then '70-85'
+       when n.s_score >= 60 and n.s_score < 70 then '60-70'
+       else '0-60'
+  end) 分数段,
+  count(1) 数量 ,
+  cast(count(1) * 100.0 / (select count(1) from score where c_id = m.c_id) as decimal(18,2))  百分比
+from Course m , score n
+where m.c_id = n.c_id
+group by m.c_id , m.c_name , (
+  case when n.s_score >= 85 then '85-100'
+       when n.s_score >= 70 and n.s_score < 85 then '70-85'
+       when n.s_score >= 60 and n.s_score < 70 then '60-70'
+       else '0-60'
+  end)
+order by m.c_id , m.c_name , 分数段;
+
+# select distinct f.c_name,a.c_id,b.`85-100`,b.百分比,c.`70-85`,c.百分比,d.`60-70`,d.百分比,e.`0-60`,e.百分比 from score a
+# left join (select c_id,SUM(case when s_score >85 and s_score <=100 then 1 else 0 end) as `85-100`,
+#                             ROUND(100*(SUM(case when s_score >85 and s_score <=100 then 1 else 0 end)/count(*)),2) as 百分比
+#                 from score GROUP BY c_id)b on a.c_id=b.c_id
+# left join (select c_id,SUM(case when s_score >70 and s_score <=85 then 1 else 0 end) as `70-85`,
+#                             ROUND(100*(SUM(case when s_score >70 and s_score <=85 then 1 else 0 end)/count(*)),2) as 百分比
+#                 from score GROUP BY c_id)c on a.c_id=c.c_id
+# left join (select c_id,SUM(case when s_score >60 and s_score <=70 then 1 else 0 end) as `60-70`,
+#                             ROUND(100*(SUM(case when s_score >60 and s_score <=70 then 1 else 0 end)/count(*)),2) as 百分比
+#                 from score GROUP BY c_id)d on a.c_id=d.c_id
+# left join (select c_id,SUM(case when s_score >=0 and s_score <=60 then 1 else 0 end) as `0-60`,
+#                             ROUND(100*(SUM(case when s_score >=0 and s_score <=60 then 1 else 0 end)/count(*)),2) as 百分比
+#                 from score GROUP BY c_id)e on a.c_id=e.c_id
+# left join course f on a.c_id = f.c_id;
+-- 24、查询学生平均成绩及其名次 *************************************
+select stu.s_id,
+       stu.s_name,
+       s.s_score,
+       avg(IFNULL(s.s_score, 0)) vscore,
+       (select count(distinct sc.s_score) from score sc where sc.c_id = s.c_id and sc.s_score > s.s_score) +
+       1 ranking
+from score s
+join student stu on s.s_id = stu.s_id
+group by stu.s_id,stu.s_name
+order by ranking;
+
+-- 25、查询各科成绩前三名的记录
+select s.s_id,
+       s.c_id,
+       s.s_score,
+       (select count(distinct sc.s_score) from score sc where sc.c_id=s.c_id and sc.s_score > s.s_score) + 1 ranking
+from score s
+order by s.c_id,s.s_score desc;
+
+select stu.s_name,m.c_id,m.s_score,m.ranking from student stu
+    join (select s.s_id,
+                 s.c_id,
+       s.s_score,
+       (select count(distinct sc.s_score) from score sc where sc.c_id=s.c_id and sc.s_score > s.s_score) + 1 ranking
+from score s
+order by s.c_id, s.s_score desc) m
+on stu.s_id = m.s_id
+where m.ranking <= 3
+order by m.c_id,m.s_score;
+
+-- 26、查询每门课程被选修的学生数
+select
+       c.c_name,
+    count(s.s_id)
+    from score s
+    join course c on s.c_id = c.c_id
+group by c.c_id;
+
+-- 27、查询出只有两门课程的全部学生的学号和姓名
+select stu.*
+from student stu
+         join score sc on stu.s_id = sc.s_id
+group by stu.s_id
+having count(sc.c_id) = 2;
+-- 28、查询男生、女生人数
+select stu.s_sex,count(stu.s_sex) from student stu group by stu.s_sex;
+-- 29、查询名字中含有"风"字的学生信息
+select * from student where s_name like '%风%';
+-- 30、查询同名同性学生名单，并统计同名人数
+select stu1.s_id,stu1.s_name,count(1) from student stu1
+    join student stu2
+        on stu1.s_id != stu2.s_id and stu1.s_name = stu2.s_name and stu1.s_sex = stu2.s_sex
+group by stu1.s_name;
+-- 31、查询1990年出生的学生名单
+select * from student where s_birth like '1990%';
+-- 32、查询每门课程的平均成绩，结果按平均成绩降序排列，平均成绩相同时，按课程编号升序排列
+select c_id,ROUND(AVG(s_score),2) as avg_score from score GROUP BY c_id ORDER BY avg_score DESC,c_id ASC
+-- 33、查询平均成绩大于等于85的所有学生的学号、姓名和平均成绩
 
     select a.s_id,b.s_name,ROUND(avg(a.s_score),2) as avg_score from score a
         left join student b on a.s_id=b.s_id GROUP BY s_id HAVING avg_score>=85
