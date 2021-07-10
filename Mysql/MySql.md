@@ -12,7 +12,7 @@
 - `show schemas` 显示所有数据源
 - `show tables` 显示当前数据源里的所有表
 - `show columns from :[table name]`  显示指定表中的所有列信息
-  - `describe :[table name]`是上面的简单写法
+  - describe :[table name]`是上面的简单写法
 - `show status`显示服务器的状态信息
 - `show grants`显示授权用户的安全信息
 - `show errors` `show wranings` 显示服务器的错误和警告
