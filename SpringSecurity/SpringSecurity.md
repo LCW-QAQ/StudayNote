@@ -112,3 +112,25 @@ public void configure(WebSecurity web) throws Exception {
 }
 ```
 
+## RememberMe
+
+```java
+@Override
+protected void configure(HttpSecurity http) throws Exception {
+    // 开启记住用户功能
+    http.rememberMe();
+}
+```
+
+```html
+<!-- 表单中使用remember-me控制是否记住 -->
+<form action="/login" method="post">
+    <input type="text" name="userName"><br>
+    <input type="password" name="pwd"><br>
+    <input type="checkbox" name="remember-me">记住我<br>
+    <!-- 开启csrf后, 请求需要带上token -->
+    <input type="text" name="#(_csrf.parameterName)" value="#(_csrf.token)"><br>
+    <input type="submit">
+</form>
+```
+
