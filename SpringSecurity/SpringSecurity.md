@@ -134,3 +134,132 @@ protected void configure(HttpSecurity http) throws Exception {
 </form>
 ```
 
+## 自定义登录/登出
+
+登录
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+</head>
+<body>
+<form action="/login" method="post">
+    <input type="text" name="userName"><br>
+    <input type="password" name="pwd"><br>
+    <input type="checkbox" name="remember-me">记住我<br>
+    <input type="text" name="#(_csrf.parameterName)" value="#(_csrf.token)"><br>
+    <input type="submit">
+</form>
+</body>
+</html>
+```
+
+自定义页面后, 登出必须使用Post请求
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+<form action="#(ctx.getContextPath())/logout" method="post">
+    <input type="text" name="#(_csrf.parameterName)" value="#(_csrf.token)"><br>
+    <input type="submit" value="POST Logout">
+</form>
+</body>
+</html>
+```
+
+## Config类中权限控制
+
+```java
+protected void configure(HttpSecurity http) throws Exception {
+    http.authorizeRequests()
+        // 指定角色才能访问
+        // Role => URL
+        // 有具体权限才能访问
+        // Authority => URL
+        .antMatchers("/admin/**").hasRole("admin")
+        .antMatchers("/user/**").hasRole("user")
+}
+```
+
+## 角色权限继承
+
+```java
+// 配置角色继承关系
+@Bean
+public RoleHierarchy roleHierarchy() {
+    RoleHierarchyImpl roleHierarchy = new RoleHierarchyImpl();
+    // 父继承关系包含所有子角色的权限
+    roleHierarchy.setHierarchy("ROLE_admin > ROLE_user > ROLE_guest");
+    return roleHierarchy;
+}
+```
+
+## 在Controller中权限控制
+
+需要在Config类中开启@EnableGlobalMethodSecurity(securedEnabled = true, prePostEnabled = true)
+
+```java
+@Controller
+public class MainController {
+    // 无需权限
+    @GetMapping("/hi")
+    @ResponseBody
+    public String hi() {
+        System.out.println("来了老弟");
+        return "hi";
+    }
+
+    @GetMapping("/admin/hi")
+    @ResponseBody
+    // 或者关系 不支持并且
+    @Secured({"ROLE_admin"})
+    public String adminHi() {
+        return "hi";
+    }
+
+    @GetMapping("/user/hi")
+    @ResponseBody
+    // 使用SpringEL表达式, 支持并且关系
+    @PreAuthorize("hasRole('ROLE_user')")
+    public String userHi() {
+        return "hi";
+    }
+
+    @GetMapping("/adminUser/hi")
+    @ResponseBody
+    // 如果配置了权限继承, 会按照继承关系匹配多个角色
+    @PreAuthorize("hasRole('ROLE_user') and hasRole('ROLE_admin')")
+    public String adminUserHi() {
+        return "hi";
+    }
+
+    @GetMapping("/guest/hi")
+    @ResponseBody
+    @PreAuthorize("hasAnyRole('ROLE_admin', 'ROLE_user', 'ROLE_guest')")
+    public String guestHi() {
+        return "hi";
+    }
+}
+```
+
+## @PostAuthorize注解
+
+```java
+// 当PostAuthorize注解中的表达式值为true时, 正常返回, 否则403
+// 使用场景: 挂系统的权限认证, 通过对方返回的值, 认证权限
+@GetMapping("testPostAuthorize")
+@ResponseBody
+@PostAuthorize("returnObject == 1")
+public int testPostAuthorize() {
+    return new Random().nextInt(2);
+}
+```
+
