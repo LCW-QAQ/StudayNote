@@ -337,3 +337,72 @@ public void getKaptchaImage(HttpServletRequest req, HttpServletResponse resp) {
     }
 }
 ```
+
+## SpringSession共享
+
+### 依赖
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.session</groupId>
+    <artifactId>spring-session-data-redis</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+    <version>2.5.2</version>
+</dependency>
+```
+
+### yaml
+
+```yaml
+server:
+  port: 8082
+
+spring:
+  redis:
+    host: 192.168.150.100
+    port: 6379
+  security:
+    user:
+      name: lcw
+      password: lcw
+```
+
+启动后, Session中的数据都会存到redis中, 实现Session共享
+
+```java
+@Controller
+public class MainController {
+    @GetMapping("/list")
+    @ResponseBody
+    public String list() {
+        return "xxoo";
+    }
+
+    @GetMapping("/set")
+    @ResponseBody
+    public String set(HttpSession session) {
+        session.setAttribute("value", "hello world");
+        return "set value: hello world";
+    }
+
+    @GetMapping("/get")
+    @ResponseBody
+    public String get(HttpSession session) {
+        return session.getAttribute("value").toString();
+    }
+}
+```
+
+
+
