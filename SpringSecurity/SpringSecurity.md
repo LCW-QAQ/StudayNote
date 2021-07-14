@@ -175,7 +175,9 @@ protected void configure(HttpSecurity http) throws Exception {
 </html>
 ```
 
-## Config类中权限控制
+## 权限控制
+
+### Config类中权限控制
 
 ```java
 protected void configure(HttpSecurity http) throws Exception {
@@ -189,7 +191,7 @@ protected void configure(HttpSecurity http) throws Exception {
 }
 ```
 
-## 角色权限继承
+### 角色权限继承
 
 ```java
 // 配置角色继承关系
@@ -202,7 +204,7 @@ public RoleHierarchy roleHierarchy() {
 }
 ```
 
-## 在Controller中权限控制
+### 在Controller中权限控制
 
 需要在Config类中开启@EnableGlobalMethodSecurity(securedEnabled = true, prePostEnabled = true)
 
@@ -250,7 +252,7 @@ public class MainController {
 }
 ```
 
-## @PostAuthorize注解
+### @PostAuthorize注解
 
 ```java
 // 当PostAuthorize注解中的表达式值为true时, 正常返回, 否则403
@@ -263,3 +265,75 @@ public int testPostAuthorize() {
 }
 ```
 
+## 图形验证码
+
+使用谷歌的kaptcha, 这个库已经很久没有更新, 可以使用其他库
+
+```xml
+<dependency>
+    <groupId>com.github.penggle</groupId>
+    <artifactId>kaptcha</artifactId>
+    <version>2.3.2</version>
+</dependency>
+```
+
+引入配置类
+
+```java
+@Configuration
+public class KaptchaConfig {
+    @Bean
+    public DefaultKaptcha getDefaultKaptcha(){
+        DefaultKaptcha captchaProducer = new DefaultKaptcha();
+        Properties properties = new Properties();
+        properties.setProperty("kaptcha.border", "yes");
+        properties.setProperty("kaptcha.border.color", "105,179,90");
+        properties.setProperty("kaptcha.textproducer.font.color", "blue");
+        properties.setProperty("kaptcha.image.width", "60");
+        properties.setProperty("kaptcha.image.height", "30");
+        properties.setProperty("kaptcha.textproducer.font.size", "22");
+        properties.setProperty("kaptcha.session.key", "code");
+        properties.setProperty("kaptcha.textproducer.char.length", "4");
+        //    properties.setProperty("kaptcha.textproducer.char.string", "678");
+        properties.setProperty("kaptcha.obscurificator.impl", "com.google.code.kaptcha.impl.ShadowGimpy");
+        properties.setProperty("kaptcha.textproducer.font.names", "宋体,楷体,微软雅黑");
+        Config config = new Config(properties);
+        captchaProducer.setConfig(config);
+        return captchaProducer;
+    }
+}
+```
+
+映射请求
+
+```java
+@GetMapping("/kaptcha")
+public void getKaptchaImage(HttpServletRequest req, HttpServletResponse resp) {
+    HttpSession session = req.getSession();
+    resp.setDateHeader("Expires", 0);
+    resp.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    resp.setHeader("Cache-Control", "post-check=0, pre-check=0");
+    resp.setHeader("Pragma", "no-cache");
+    resp.setContentType("image/jpeg");
+
+    String capText = kaptcha.createText();
+    session.setAttribute(Constants.KAPTCHA_SESSION_KEY, capText);
+    BufferedImage image = kaptcha.createImage(capText);
+    ServletOutputStream out = null;
+    try {
+        out = resp.getOutputStream();
+        ImageIO.write(image, "jpg", out);
+        out.flush();
+    } catch (IOException e) {
+        e.printStackTrace();
+    } finally {
+        if (out != null) {
+            try {
+                out.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}
+```
