@@ -1,3 +1,5 @@
+[TOC]
+
 # 非阻塞Socket IO多路复用器 Neety
 
 ## 阻塞式IO代码
@@ -103,6 +105,8 @@ public class SocketDemo {
 }
 ```
 
+
+
 ## C10K 问题
 
 C10K问题的本质上是操作系统的问题。早期操作系统都是以传统的同步阻塞I/O模型处理请求。当并发量上升后, 创建的连接或线程多了，数据拷贝频繁, 缓存I/O、内核将数据拷贝到用户进程空间、阻塞，进程/线程上下文切换消耗大， 导致操作系统崩溃
@@ -110,6 +114,8 @@ C10K问题的本质上是操作系统的问题。早期操作系统都是以传�
 参考 [http://www.kegel.com/c10k.html](http://www.kegel.com/c10k.html)
 
 并发量提升后传统的阻塞式IO无法应对, 因此非阻塞式IO模型开始被人们重视
+
+
 
 ## 非阻塞Socket代码
 
@@ -162,6 +168,8 @@ public class SocketNIO {
 }
 ```
 
+
+
 ## IO多路复用器
 
 1. 每个socket线程在读取文件的候, 线程都是阻塞的, 这个时期的IO是blocking-io
@@ -205,9 +213,37 @@ public class SocketNIO {
 
 ### IO多路复用器 Java代码
 
+#### 客户端代码
+
+```java
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.channels.SocketChannel;
+
+public class C10K {
+    public static void main(String[] args) {
+        InetSocketAddress serverAddr = new InetSocketAddress("192.168.150.100", 8080);
+        for (int i = 10000; i < 65535; i++) {
+            try {
+                // 测试就不关流了
+                SocketChannel channel1 = SocketChannel.open();
+                channel1.bind(new InetSocketAddress("192.168.150.1", i));
+                channel1.connect(serverAddr);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}
+```
+
+
+
 #### 服务端代码
 
-##### 单线程
+##### 单线程 - 读写事件合并
+
+> 单线程中线性处理
 
 ```java
 import java.io.IOException;
@@ -217,7 +253,7 @@ import java.nio.channels.*;
 import java.util.Iterator;
 import java.util.Set;
 
-public class SocketMultiplexingSingleThread {
+public class SocketMultiplexingSingleThread_1 {
 
     ServerSocketChannel serverChannel;
 
@@ -248,14 +284,15 @@ public class SocketMultiplexingSingleThread {
         try {
             for (; ; ) {
                 // 对应linux中的epoll_wait
-                while (selector.select(5000) > 0) {
+                while (selector.select(100) > 0) {
                     // 所有有状态的fd
                     Set<SelectionKey> keys = selector.selectedKeys();
                     for (Iterator<SelectionKey> it = keys.iterator(); it.hasNext(); ) {
                         SelectionKey key = it.next();
                         // 这里一定要删除, 不然会重复循环 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                        // 相当于在linux fd红黑树中删除
+                        // 不是在linux fd红黑树中删除, 在jvm维护的结果集中删除, it.getClass(), 底层是一个HashMap, it是map的迭代器
                         it.remove();
+                        // 接受一个新的连接
                         if (key.isAcceptable()) {
                             acceptHandler(key);
                         } else if (key.isReadable()) {
@@ -295,6 +332,7 @@ public class SocketMultiplexingSingleThread {
     }
 
     // 处理读取事件
+    // 这个方法实际上即处理了读事件也处理了写入
     public void readHandler(SelectionKey key) {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         // 获取附件, 这里可以是任何对象, 上面处理连接时, 使用的是ByteBuffer, 这里直接强转
@@ -311,11 +349,136 @@ public class SocketMultiplexingSingleThread {
                     // 反转后可以写入
                     buf.flip();
                     // 只要还有数据就继续写入
+                    // 处理写入
                     while (buf.hasRemaining()) {
                         clientChannel.write(buf);
                     }
-                    // 清除buf数据
+                    // 清楚buf数据
                     buf.clear();
+                } else if (num == 0) {
+                    break;
+                } else {
+                    // 四次分手, 服务端需要响应断开, 如果不close客户端channel, 服务端会出现close_wat, 客户端会出现FIN_WAIT2
+                    clientChannel.close();
+                    break;
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) {
+        new SocketMultiplexingSingleThread_1().run();
+    }
+}
+```
+
+##### 单线程 - 读写事件分离
+
+> 单线程中线性处理
+
+```java
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.*;
+import java.util.Iterator;
+import java.util.Set;
+
+public class SocketMultiplexingSingleThread_1_1 {
+
+    ServerSocketChannel serverChannel;
+
+    // 多路复用器
+    Selector selector;
+
+    public void init() {
+        try {
+            serverChannel = ServerSocketChannel.open();
+            // 非阻塞
+            serverChannel.configureBlocking(false);
+            serverChannel.bind(new InetSocketAddress(8080));
+
+            // 创建多路复用器对象, linux默认epoll
+            // 对应linux中的epoll_create 创建多路复用器
+            selector = Selector.open();
+
+            // 注册当前server的fd
+            // 对应linux中的epoll_ctl(fd, ADD, OP_EPOLL)
+            serverChannel.register(selector, SelectionKey.OP_ACCEPT);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void run() {
+        init();
+        try {
+            for (; ; ) {
+                // 对应linux中的epoll_wait
+                while (selector.select(100) > 0) {
+                    // 所有有状态的fd
+                    Set<SelectionKey> keys = selector.selectedKeys();
+                    for (Iterator<SelectionKey> it = keys.iterator(); it.hasNext(); ) {
+                        SelectionKey key = it.next();
+                        // 这里一定要删除, 不然会重复循环 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                        // 不是在linux fd红黑树中删除, 在jvm维护的结果集中删除, it.getClass(), 底层是一个HashMap, it是map的迭代器
+                        it.remove();
+                        // 接受一个新的连接
+                        if (key.isAcceptable()) {
+                            acceptHandler(key);
+                        } else if (key.isReadable()) {
+                            readHandler(key);
+                        } else if (key.isWritable()) {
+                            writeHandler(key);
+                        } else if (key.isConnectable()) {
+
+                        } else if (key.isValid()) {
+
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // 处理接受连接事件
+    public void acceptHandler(SelectionKey key) {
+        try {
+            ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
+            SocketChannel client = serverChannel.accept();
+            // 一定记得要把client设为非阻塞
+            client.configureBlocking(false);
+            ByteBuffer buf = ByteBuffer.allocate(4096);
+            // 将新连接注册为读事件
+            // 有数据从连接过来时, 可以捕获到读取事件
+            client.register(selector, SelectionKey.OP_READ, buf);
+            System.out.println("----------------------------");
+            System.out.println("新的客户端: " + client.getRemoteAddress());
+            System.out.println("----------------------------");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // 处理读取事件
+    public void readHandler(SelectionKey key) {
+        System.out.println("read handler");
+        SocketChannel clientChannel = (SocketChannel) key.channel();
+        // 获取附件, 这里可以是任何对象, 上面处理连接时, 使用的是ByteBuffer, 这里直接强转
+        ByteBuffer buf = (ByteBuffer) key.attachment();
+        buf.clear();
+        // 是否读取到数据
+        int num;
+        try {
+            for (; ; ) {
+                num = clientChannel.read(buf);
+                if (num > 0) {
+                    // 需要写入, 注册写事件, 具体如何写入, 有writeHandler控制
+                    clientChannel.register(selector, SelectionKey.OP_WRITE, buf);
                 } else if (num == 0) {
                     break;
                 } else {
@@ -328,32 +491,201 @@ public class SocketMultiplexingSingleThread {
         }
     }
 
-    public static void main(String[] args) {
-        new SocketMultiplexingSingleThread().run();
-    }
-}
-```
-
-#### 客户端代码
-
-```java
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.channels.SocketChannel;
-
-public class C10K {
-    public static void main(String[] args) {
-        InetSocketAddress serverAddr = new InetSocketAddress("192.168.150.100", 8080);
-        for (int i = 10000; i < 65535; i++) {
+    // 处理写事件
+    public void writeHandler(SelectionKey key) {
+        System.out.println("write handler");
+        SocketChannel clientChannel = (SocketChannel) key.channel();
+        ByteBuffer buf = (ByteBuffer) key.attachment();
+        // 翻转buf, 需要读取buf里的内容
+        buf.flip();
+        // 还有剩余的就写到客户端那边去
+        while (buf.hasRemaining()) {
             try {
-                // 测试就不关流了
-                SocketChannel channel1 = SocketChannel.open();
-                channel1.bind(new InetSocketAddress("192.168.150.1", i));
-                channel1.connect(serverAddr);
+                clientChannel.write(buf);
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
+        // 读取完后记得clear, 转回写入模式
+        buf.clear();
+        try {
+            clientChannel.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) {
+        new SocketMultiplexingSingleThread_1_1().run();
     }
 }
 ```
+
+##### 多线程
+
+> 多线程处理, 但是必须调用key.cancel(), cancel会涉及到system call, 影响性能
+
+```java
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+
+public class SocketMultiplexingSingleThread_2 {
+
+    ServerSocketChannel serverChannel;
+
+    // 多路复用器
+    Selector selector;
+
+    public void init() {
+        try {
+            serverChannel = ServerSocketChannel.open();
+            // 非阻塞
+            serverChannel.configureBlocking(false);
+            serverChannel.bind(new InetSocketAddress(8080));
+
+            // 创建多路复用器对象, linux默认epoll
+            // 对应linux中的epoll_create 创建多路复用器
+            selector = Selector.open();
+
+            // 注册当前server的fd
+            // 对应linux中的epoll_ctl(fd, ADD, OP_EPOLL)
+            serverChannel.register(selector, SelectionKey.OP_ACCEPT);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void run() {
+        init();
+        try {
+            for (; ; ) {
+                // 对应linux中的epoll_wait
+                while (selector.select(100) > 0) {
+                    // 所有有状态的fd
+                    Set<SelectionKey> keys = selector.selectedKeys();
+                    for (Iterator<SelectionKey> it = keys.iterator(); it.hasNext(); ) {
+                        SelectionKey key = it.next();
+                        // 这里一定要删除, 不然会重复循环 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                        // 不是在linux fd红黑树中删除, 在jvm维护的结果集中删除, it.getClass(), 底层是一个HashMap, it是map的迭代器
+                        it.remove();
+                        // 接受一个新的连接
+                        if (key.isAcceptable()) {
+                            acceptHandler(key);
+                        } else if (key.isReadable()) {
+                            // 调用linux中epoll_ctl(del), 这个才是真的从内核的fd红黑树中删除
+                            key.cancel();
+                            /*
+						  如果没有调用key.cancel(), key仍然存在于linux内核的fd红黑树中
+						  下面的handler方法已经不是阻塞的了
+						  运行readHandler后, while循环继续判断, key仍存在内核fd红黑树中, key的事件也仍然存在, 就在这个时差内
+						  while 循环selector.select, 会继续获取到key的事件, 然而此时key的事件其实已经被其他线程正在处理
+						  导致handler重复处理, key.cancel() 删除后, 就不会重复select了
+                            */
+                            readHandler(key);
+                        } else if (key.isWritable()) {
+                            // 调用linux中epoll_ctl(del), 这个才是真的从内核的fd红黑树中删除
+                            key.cancel();
+                            writeHandler(key);
+                        } else if (key.isConnectable()) {
+
+                        } else if (key.isValid()) {
+
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // 处理接受连接事件
+    public void acceptHandler(SelectionKey key) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
+                SocketChannel client = serverChannel.accept();
+                // 一定记得要把client设为非阻塞
+                client.configureBlocking(false);
+                ByteBuffer buf = ByteBuffer.allocate(4096);
+                // 将新连接注册为读事件
+                // 有数据从连接过来时, 可以捕获到读取事件
+                client.register(selector, SelectionKey.OP_READ, buf);
+                System.out.println("----------------------------");
+                System.out.println("新的客户端: " + client.getRemoteAddress());
+                System.out.println("----------------------------");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    // 处理读取事件
+    public void readHandler(SelectionKey key) {
+        CompletableFuture.runAsync(() -> {
+            System.out.println("read handler");
+            SocketChannel clientChannel = (SocketChannel) key.channel();
+            // 获取附件, 这里可以是任何对象, 上面处理连接时, 使用的是ByteBuffer, 这里直接强转
+            ByteBuffer buf = (ByteBuffer) key.attachment();
+            buf.clear();
+            // 是否读取到数据
+            int num;
+            try {
+                for (; ; ) {
+                    num = clientChannel.read(buf);
+                    if (num > 0) {
+                        // 需要写入, 注册写事件, 具体如何写入, 有writeHandler控制
+                        clientChannel.register(selector, SelectionKey.OP_WRITE, buf);
+                    } else if (num == 0) {
+                        break;
+                    } else {
+                        clientChannel.close();
+                        break;
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    // 处理写事件
+    public void writeHandler(SelectionKey key) {
+        CompletableFuture.runAsync(() -> {
+            System.out.println("write handler");
+            SocketChannel clientChannel = (SocketChannel) key.channel();
+            ByteBuffer buf = (ByteBuffer) key.attachment();
+            // 翻转buf, 需要读取buf里的内容
+            buf.flip();
+            // 还有剩余的就写到客户端那边去
+            while (buf.hasRemaining()) {
+                try {
+                    clientChannel.write(buf);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            // 读取完后记得clear, 转回写入模式
+            buf.clear();
+            try {
+                clientChannel.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    public static void main(String[] args) {
+        new SocketMultiplexingSingleThread_2().run();
+    }
+}
+```
+
