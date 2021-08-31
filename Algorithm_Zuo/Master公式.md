@@ -23,5 +23,5 @@
 - log(A, B) > D
     - O(N^log(A, B))
 - log(A, B) == D
-    - O(N^D * log(N, 2))
+    - O(N^D * log(2, N))
 
