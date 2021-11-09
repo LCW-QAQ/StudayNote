@@ -1,5 +1,7 @@
 # SpringSecurityQuickStart
 
+## 有状态会话
+
 >创建SecurityConfig类并继承WebSecurityConfigurerAdapter
 
 ```java
@@ -210,7 +212,6 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {}
                 http.addFilterAt(loginFilter(), UsernamePasswordAuthenticationFilter.class);
                 ```
         
-    * 
 
-
+## 无状态会话
 
