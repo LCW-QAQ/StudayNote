@@ -310,6 +310,364 @@ management:
 
 ## Alibaba
 
+### Nacos
+
+> 服务注册与发现
+
+#### 服务端
+
+[Nacos官网](https://nacos.io/zh-cn/)下载服务端
+
+运行对应的startup脚本即可, 默认以集群模式运行
+
+单机模式: `./startup.sh -m standlone`
+
+集群模式: `./startup.sh -m cluster`
+
+集群模式需配置数据库和集群配置文件才能运行
+
+
+
+配置mysql
+
+```properties
+#*************** Config Module Related Configurations ***************#
+### If use MySQL as datasource:
+spring.datasource.platform=mysql
+
+### Count of DB:
+db.num=1
+
+### Connect URL of DB:
+db.url.0=jdbc:mysql://192.168.150.100:3306/nacos_config?characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=UTC
+db.user.0=root
+db.password.0=***
+```
+
+配置cluster.conf
+
+```
+172.17.160.1:8841
+172.17.160.1:8843
+172.17.160.1:8848
+# 这里配置127.0.0.1即可, 如果运行集群时出错, 将nacos运行后显示在控制台的ip追加进来, 就像上面那样
+192.168.43.231:8841
+192.168.43.231:8843
+192.168.43.231:8848
+```
+
+#### 客户端
+
+```xml
+<!-- 服务发现 -->
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+</dependency>
+<!-- 配置中心 -->
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+</dependency>
+```
+
+```yaml
+spring:
+  application:
+    name: nacos-server
+
+  cloud:
+    nacos:
+      discovery:
+        username: nacos
+        password: nacos
+        namespace: public
+      server-addr: 192.168.43.231:8841
+      config:
+      	# nacos的dataId默认以${sprin.application.name}-${spring.profiles.active}.${spring.cloud.nacos.config.file-extension}命名, spring.profiles.active没有配置时, 没有中划线
+      	# 配置文件类型
+        file-extension: yaml
+        # 配置集群地址
+        server-addr: 192.168.43.231:8841,192.168.43.231:8848,192.168.43.231:8843
+```
+
+> 注意这个里有个坑, 想使用nacos的配置中心功能
+>
+> 必须将配置文件名以bootstrap开头, 列如bootstrap.yaml, 云端配置拉取才会生效
+
+在需要动态配置的类上加入@RefreshScope即可动态刷新配置
+
+```java
+@RefreshScope
+@Slf4j
+public class MainController {
+
+    private final RestTemplate restTemplate;
+
+    @Value("${name}")
+    public String name;
+
+    @GetMapping("name")
+    public String getName() {
+        return name;
+    }
+}
+```
+
+### Sentinel
+
+> Sentinel是负责服务限流、熔断降级等
+
+#### 客户端
+
+```xml
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+</dependency>
+```
+
+```java
+// 在SpringApplication.run之前调用init方法, 可以看到限流效果, 这里是手动用代码的方式配置限流
+public static void init() {
+    List<FlowRule> rules = new ArrayList<>();
+
+    final FlowRule rule = new FlowRule();
+    // resource代表一条规则的名字
+    rule.setResource("port");
+    // grade代表规则的类型, 这里是指qps限流, 也可以是基于线程数限流或熔断降级
+    rule.setGrade(RuleConstant.FLOW_GRADE_QPS);
+    // qps 2
+    rule.setCount(2);
+    rules.add(rule);
+    FlowRuleManager.loadRules(rules);
+}
+```
+
+```java
+// 使用时在需要限流的Controller方法上加上@SentinelResource即可
+// value指定对应的规则名即resrouceName, blockHandler是限流处理方法, 对应的还有blockHandlerClass
+// fallBack是降级方法, 对应的还有fallBackClass
+@SentinelResource(value = "port", blockHandler = "blockHandel", blockHandlerClass = NacosBlockHandler.class)
+@GetMapping("port")
+public String getPort() {
+    return port;
+}
+```
+
+```java
+// 在使用fallBackClass或blockHandlerClass时, 所有处理方法必须是static, 不然sentinel找不到会报错
+@Slf4j
+public class NacosBlockHandler {
+    // 2021/12/6 整合sentinel-dashboard 与 sentinel-nacos-datasource后不会调用, 可能是bug
+    // 就是bug, 默认从nacos中获取的限流规则, 无法调用本地的BlockHandler, 删除后重新配置就会生效
+    // 貌似不是bug, /port与port虽然都能触发限流但是, 如果与@SentinelResource中的value不一致的话, 不会调用Handler
+    // 必须为static方法, @SentinelResource才能正确使用
+    public static String blockHandel(BlockException e) {
+        log.error("限流了", e);
+        return "限流";
+    }
+}
+```
+
+#### sentinel-dashboard
+
+去[Sentinel仓库](https://github.com/alibaba/Sentinel)下载sentinel-dashboard.jar包
+
+java -Dserver.port=8080 -jar sentinel-dashboard.jar运行dashboard
+
+客户端配置dashboard的地址即可, 通过dashboard控制限流, 熔断降级
+
+客户端想通过dashboard控制, 还需要在上vm参数`-Dproject.name=nacos-server -Dcsp.sentinel.dashboard.server=localhost:8080`
+
+```yaml
+sentinel:
+    transport:
+    	# dashboard地址
+    	dashboard: localhost:8080
+    # 防止懒加载没看到效果
+    eager: true
+```
+
+如果想要持久化sentinel信息, 可以使用alibaba提供的一系列`sentinel-***-datasource`
+
+列如使用nacos存储sentinel信息
+
+```xml
+<dependency>
+    <groupId>com.alibaba.csp</groupId>
+    <artifactId>sentinel-datasource-nacos</artifactId>
+</dependency>
+```
+
+> 这里有个大坑, 我先现在用的是SpringCloudAlibaba 2.2.1的版本
+>
+> 默认使用start.aliyun.com, 引入的是2.2.2的版本, 2.2.2版本引入sentinel-datasrouce-nacos后版本冲突, 导致出错
+>
+> 将版本降低至2.2.1即可
+
+配置文件中配置数据源就能使用nacos持久化了
+
+```yaml
+spring:
+  application:
+    name: nacos-server
+
+  cloud:
+    sentinel:
+      transport:
+        dashboard: localhost:8080
+      eager: true
+      datasource:
+      	# 数据源名称, 随意
+        ds:
+          nacos:
+            server-addr: 192.168.43.231:8841
+            dataId: nacos-server-sentinel
+            groupId: DEFAULT_GROUP
+            ruleType: flow
+```
+
+配置后在nacos中创建对应dataId的配置文件
+
+```json
+[
+    {
+        "resource": "port",
+        "limitApp": "default",
+        // 详细查看文档, 1代表qps限流
+        "grade": 1,
+        // 限流数量
+        "count": 2,
+        "strategy": 0,
+        "controlBehavior": 0,
+        "clusterMode": false
+    }
+]
+```
+
+每次重启server时都会重新加载nacos中的限流信息了, 不过要注意的时, sentinel-nacos是持久化是静态的, 配置不会随着dashboard中的操作改变
+
+### SpringCloudGateway整合nacos
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-gateway</artifactId>
+</dependency>
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+</dependency>
+```
+
+@EnableDiscoveryClient开启服务发现
+
+```yaml
+spring:
+  application:
+    name: cloud-gateway
+
+  cloud:
+    nacos:
+      discovery:
+        username: nacos
+        password: nacos
+        namespace: public
+      server-addr: 192.168.43.231:8841,192.168.43.231:8848,192.168.43.231:8843
+
+    gateway:
+      discovery:
+        locator:
+          # 是否自动为每个服务生成以服务名为Path的路由
+          enabled: true
+          # 是否将每个服务名转为小写
+          lower-case-service-id: true
+      routes:
+        # 路由id, 唯一标识
+        - id: consumer
+          # 具体路由的uri, 可以使用lb://语法, 自动负载均衡
+          uri: lb://nacos-server
+          predicates:
+            # 路由path, 必须写成Path=
+            - Path=/user/**
+          filters:
+            # 去掉一个路由前缀, 即去掉user
+            - StripPrefix=1
+        - id: baidu
+          uri: https://www.baidu.com
+          predicates:
+            - Path=/aidu/**
+          filters:
+            - StripPrefix=1
+
+server:
+  port: 80
+```
+
+### SpringCloudGateway整合sentinel
+
+```xml
+<!--网关层限流-->
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-alibaba-sentinel-gateway</artifactId>
+</dependency>
+<!--服务发现-->
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+</dependency>
+<!--spring cloud gateway-->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-gateway</artifactId>
+</dependency>
+<!--sentinel-->
+<dependency>
+    <groupId>com.alibaba.cloud</groupId>
+    <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+</dependency>
+```
+
+@EnableDiscoveryClient开启服务发现
+
+```yaml
+spring:
+  application:
+    name: sentinel-cloud-gateway
+
+  cloud:
+    nacos:
+      discovery:
+        username: nacos
+        password: nacos
+        namespace: public
+        server-addr: 192.168.43.231:8841,192.168.43.231:8848,192.168.43.231:8843
+
+    gateway:
+      discovery:
+        locator:
+          # 自动为服务创建路由
+          enabled: true
+          # 服务名全小写
+          lower-case-service-id: true
+
+    sentinel:
+      transport:
+      	# 指定sentinel-dashboard地址
+        dashboard: localhost:8080
+
+server:
+  port: 80
+```
+
+添加vm参数`-Dproject.name=sentinel-cloud-gateway -Dcsp.sentinel.dashboard.server=localhost:8080`
+
+启动即可通过dashboard进行网关层流控
+
+自定义流控处理方法, 请参考wiki
+
 ## 其他组件
 
 ### SpringBootAdmin
