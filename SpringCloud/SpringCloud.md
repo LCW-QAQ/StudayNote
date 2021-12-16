@@ -356,6 +356,105 @@ ribbon:
   OkToRetryOnAllOperations: true
 ```
 
+#### ribbon灰度发布
+
+```mermaid
+graph TB
+req[请求] -->|由aop将请求头中的version信息存入ThreadLocal| grayReqAspectj[灰度发布Aop切面]
+		 -->|ThreadLocal中的version字段与serverMetadata中的version对比| grayRule[灰度发布规则]
+		 ---> 路由到指定version服务器上
+```
+
+
+
+```java
+@Aspect
+@Component
+public class GrayRequestAspectj {
+    @Pointcut("execution(* com.lcw.apipassenger.controller..*Controller*.*(..))")
+    public void allController() {
+    }
+
+    /**
+     * aop切入所有Controller, 配置灰度发布所需要用到的VERSION_THREAD_LOCAL
+     */
+    @Before("allController()")
+    public void before() {
+        final RequestAttributes reqAttrs = RequestContextHolder.getRequestAttributes();
+        if (reqAttrs instanceof ServletRequestAttributes) {
+            final ServletRequestAttributes servletReqAttrs = (ServletRequestAttributes) reqAttrs;
+            final HttpServletRequest req = servletReqAttrs.getRequest();
+            final String version = req.getHeader("version");
+            GrayRule.VERSION_THREAD_LOCAL.set(version);
+        }
+    }
+}
+```
+
+```java
+@Configuration
+public class RibbonGrayConfiguration {
+
+    /**
+     * 自定义灰度发布规则
+     */
+    @Bean
+    public GrayRule grayRule() {
+        return new GrayRule();
+    }
+}
+```
+
+```java
+public class GrayRule extends AbstractLoadBalancerRule {
+
+    static final ThreadLocal<String> VERSION_THREAD_LOCAL = new ThreadLocal<>();
+
+    static final AtomicInteger cycleCounter = new AtomicInteger(0);
+
+    @Override
+    public void initWithNiwsConfig(IClientConfig iClientConfig) {
+        // noting to do
+    }
+
+    @Override
+    public Server choose(Object o) {
+        final String version = VERSION_THREAD_LOCAL.get();
+        final ILoadBalancer lb = getLoadBalancer();
+        return chooseByGray(lb.getReachableServers(), version);
+    }
+
+    /**
+     * 灰度发布
+     */
+    private Server chooseByGray(List<Server> servers, String version) {
+        if (version == null) return chooseByCycle(servers);
+
+        final List<Server> versionServers = servers.stream().filter(server ->
+                        version.equals(((DiscoveryEnabledServer) server).getInstanceInfo()
+                                .getMetadata().get("version")))
+                .collect(Collectors.toList());
+        return versionServers.size() > 0 ?
+                chooseByCycle(versionServers) :
+                chooseByCycle(servers);
+    }
+
+    /**
+     * 从服务器列表中随机选择一台服务器
+     */
+    private Server chooseByRandom(List<Server> servers) {
+        return servers.get((int) (Math.random() * servers.size()));
+    }
+
+    /**
+     * 从服务器列表中轮询获取一台服务器
+     */
+    private Server chooseByCycle(List<Server> servers) {
+        return servers.get(cycleCounter.getAndIncrement() % servers.size());
+    }
+}
+```
+
 ### Hystrix
 
 ```xml
