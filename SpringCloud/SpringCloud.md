@@ -63,6 +63,100 @@ server:
   port: 80
 ```
 
+#### zuul灰度发布
+
+网关层灰度发布
+
+引入别人写好的灰度发布规则, 原理就是自定义PredicateBasedRule, 规则匹配
+
+```xml
+<dependency>
+    <groupId>io.jmnarloch</groupId>
+    <artifactId>ribbon-discovery-filter-spring-cloud-starter</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+需要灰度发布的服务配置yaml
+
+```yaml
+spring:
+  application:
+    name: service-sms
+eureka:
+  client:
+    service-url:
+      defaultZone: http://euk.com:7900/eureka
+
+---
+spring:
+  profiles: v1
+eureka:
+  instance:
+    metadata-map:
+      version: v1
+server:
+  port: 8020
+---
+spring:
+  profiles: v2
+eureka:
+  instance:
+    metadata-map:
+      version: v2
+server:
+  port: 8021
+---
+spring:
+  profiles: v1_2
+eureka:
+  instance:
+    metadata-map:
+      version: v1
+server:
+  port: 8023
+---
+spring:
+  profiles: v2_2
+eureka:
+  instance:
+    metadata-map:
+      version: v2
+server:
+  port: 8024
+```
+
+在ZuulFilter中配置灰度发布具体规则即可
+
+```kotlin
+@Component
+class GrayFilter : ZuulFilter() {
+    override fun shouldFilter(): Boolean {
+        return true
+    }
+
+    override fun run() {
+        val req = RequestContext.getCurrentContext().request
+        when (req.getHeader("user_id")) {
+            "v1" -> {
+                RibbonFilterContextHolder.getCurrentContext().add("version", "v1")
+            }
+            "v2" -> {
+                RibbonFilterContextHolder.getCurrentContext().add("version", "v2")
+            }
+        }
+    }
+
+    override fun filterType(): String {
+        return FilterConstants.ROUTE_TYPE
+    }
+
+    override fun filterOrder(): Int {
+        return 0
+    }
+}
+```
+
 ### Eureka
 
 #### Server
