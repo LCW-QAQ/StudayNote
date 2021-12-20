@@ -47,6 +47,8 @@ zuul:
   # 如果要配置忽略的服务就必须全部使用小写, !---: 坑
   ignored-services:
     - eurekaprovider
+  # 配置不向后传递的request header信息
+  # sensitive-headers:
   routes:
     baidu:
       path: /aidu/**
@@ -62,6 +64,12 @@ zuul:
 server:
   port: 80
 ```
+
+#### 一些有用的接口
+
+>context.setSendZuulResponse(false); 不走后面的ROUTE filter了, 但是会走post filter 和 pre filter。
+>
+>shoudFilter是指当前filter的run方法是否执行
 
 #### zuul灰度发布
 
@@ -153,6 +161,107 @@ class GrayFilter : ZuulFilter() {
 
     override fun filterOrder(): Int {
         return 0
+    }
+}
+```
+
+#### zuul动态路由转发
+
+```java
+@Component
+public class RibbonMatchingFilter extends ZuulFilter {
+    @Override
+    public String filterType() {
+        return FilterConstants.ROUTE_TYPE;
+    }
+
+    @Override
+    public int filterOrder() {
+        return 0;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+        final RequestContext context = RequestContext.getCurrentContext();
+        final HttpServletRequest req = context.getRequest();
+        final String uri = req.getRequestURI();
+        // 匹配需要转发的uri
+        if (uri.contains("uri-matching-port")) {
+            context.set(FilterConstants.REQUEST_URI_KEY, "/port");
+            // 一定要配置serviceId不然映射不到, 默认映射的应该是本地
+            context.set(FilterConstants.SERVICE_ID_KEY, "service-sms");
+        }
+        return null;
+    }
+}
+```
+
+#### 网关限流与服务限流
+
+网关限流
+
+```java
+@Component
+public class LimitedFilter extends ZuulFilter {
+
+    // 每秒生成两个令牌
+    private final RateLimiter RATE_LIMITER = RateLimiter.create(2);
+
+    @Override
+    public String filterType() {
+        return FilterConstants.PRE_TYPE;
+    }
+
+    @Override
+    public int filterOrder() {
+        return 1;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+        final RequestContext context = RequestContext.getCurrentContext();
+        if (!RATE_LIMITER.tryAcquire()) {
+            // 尝试获取令牌失败, 不想再走后面的ROUTE过滤器, 但是会走postRoute, 可以在其他过滤器shouldFilter控制
+            context.set("limited", true);
+            context.setSendZuulResponse(false);
+            context.setResponseStatusCode(HttpStatus.TOO_MANY_REQUESTS.value());
+            return null;
+        }
+        return null;
+    }
+}
+```
+
+服务限流
+
+```java
+@Component
+public class LimitedFilter implements Filter {
+
+    // 每秒生成2个令牌
+    private final RateLimiter RATE_LIMITER = RateLimiter.create(2);
+
+    @Override
+    public void doFilter(ServletRequest req,
+                         ServletResponse resp,
+                         FilterChain filterChain) throws IOException, ServletException {
+        if (!RATE_LIMITER.tryAcquire()) {
+            resp.setContentType("application/json");
+            resp.setCharacterEncoding("utf-8");
+            resp.getWriter().write("限流");
+        } else {
+            filterChain.doFilter(req, resp);
+        }
     }
 }
 ```
