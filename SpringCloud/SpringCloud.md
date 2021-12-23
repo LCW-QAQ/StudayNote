@@ -772,6 +772,8 @@ public class NacosBlockHandler {
 }
 ```
 
+> !!! 注意限流与降级方法参数必须对应上
+
 #### sentinel-dashboard
 
 去[Sentinel仓库](https://github.com/alibaba/Sentinel)下载sentinel-dashboard.jar包
