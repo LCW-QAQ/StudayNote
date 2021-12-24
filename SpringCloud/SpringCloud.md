@@ -474,7 +474,7 @@ req[请求] -->|由aop将请求头中的version信息存入ThreadLocal| grayReqA
 		 ---> 路由到指定version服务器上
 ```
 
-
+##### 自己实现
 
 ```java
 @Aspect
@@ -560,6 +560,134 @@ public class GrayRule extends AbstractLoadBalancerRule {
      */
     private Server chooseByCycle(List<Server> servers) {
         return servers.get(cycleCounter.getAndIncrement() % servers.size());
+    }
+}
+```
+
+##### **第三方框架**
+
+```xml
+<dependency>
+    <groupId>io.jmnarloch</groupId>
+    <artifactId>ribbon-discovery-filter-spring-cloud-starter</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+在需要灰度的服务器中配置meta version信息
+
+```yaml
+spring:
+  application:
+    name: service-sms
+#  profiles:
+#    active: dev
+eureka:
+  client:
+    service-url:
+      defaultZone: http://euk.com:7900/eureka
+
+---
+spring:
+  profiles: v1
+eureka:
+  instance:
+    metadata-map:
+      version: v1
+server:
+  port: 8020
+---
+spring:
+  profiles: v2
+eureka:
+  instance:
+    metadata-map:
+      version: v2
+server:
+  port: 8021
+---
+spring:
+  profiles: v1_2
+eureka:
+  instance:
+    metadata-map:
+      version: v1
+server:
+  port: 8023
+---
+spring:
+  profiles: v2_2
+eureka:
+  instance:
+    metadata-map:
+      version: v2
+server:
+  port: 8024
+```
+
+在过滤器中配置版本号信息即可
+
+```kotlin
+@Component
+class GrayFilter : ZuulFilter() {
+    override fun shouldFilter(): Boolean {
+        return true
+    }
+
+    override fun run() {
+        val req = RequestContext.getCurrentContext().request
+        when (req.getHeader("user_id")) {
+            "v1" -> {
+                RibbonFilterContextHolder.getCurrentContext().add("version", "v1")
+            }
+            "v2" -> {
+                RibbonFilterContextHolder.getCurrentContext().add("version", "v2")
+            }
+        }
+    }
+
+    override fun filterType(): String {
+        return FilterConstants.ROUTE_TYPE
+    }
+
+    override fun filterOrder(): Int {
+        return 0
+    }
+}
+```
+
+#### ribbon请求再映射(传统项目转型新项目)
+
+```java
+@Component
+public class RibbonMatchingFilter extends ZuulFilter {
+    @Override
+    public String filterType() {
+        return FilterConstants.ROUTE_TYPE;
+    }
+
+    @Override
+    public int filterOrder() {
+        return 0;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+        final RequestContext context = RequestContext.getCurrentContext();
+        final HttpServletRequest req = context.getRequest();
+        final String uri = req.getRequestURI();
+        // 匹配需要转发的uri
+        if (uri.contains("uri-matching-port")) {
+            context.set(FilterConstants.REQUEST_URI_KEY, "/port");
+            // 一定要配置serviceId不然映射不到, 默认映射的应该是本地
+            context.set(FilterConstants.SERVICE_ID_KEY, "service-sms");
+        }
+        return null;
     }
 }
 ```
@@ -852,6 +980,94 @@ spring:
 
 每次重启server时都会重新加载nacos中的限流信息了, 不过要注意的时, sentinel-nacos是持久化是静态的, 配置不会随着dashboard中的操作改变
 
+#### 整合RestTemplate
+
+定义限流/熔断/降级处理类
+
+> !!!记得一定要加@Component, 必须将类注入到Spring容器中
+>
+> !!!上面的SentinelResource不需要注入, 但是这里必须注入
+
+```java
+@Slf4j
+@Component
+public class SentinelExceptionHandler {
+    public static SentinelClientHttpResponse globalFallBack(HttpRequest request,
+                                                            byte[] body,
+                                                            ClientHttpRequestExecution execution,
+                                                            BlockException blockException) {
+        log.info("globalFallBack, exception: {}", blockException.toString());
+        /*return new SentinelClientHttpResponse(JSON.toJSONString(new HashMap<String, Object>() {{
+            put("execution", execution);
+            put("blockException", blockException);
+        }}));*/
+        return new SentinelClientHttpResponse("globalFallBack");
+    }
+
+    public static SentinelClientHttpResponse globalBlockHandler(HttpRequest request,
+                                                                byte[] body,
+                                                                ClientHttpRequestExecution execution,
+                                                                BlockException blockException) {
+        log.info("globalBlockHandler, exception: {}", blockException.toString());
+        return new SentinelClientHttpResponse(JSON.toJSONString(new HashMap<String, Object>() {{
+            put("execution", execution);
+            put("blockException", blockException);
+        }}));
+    }
+}
+```
+
+```java
+@Configuration
+public class RestTemplateConfiguration {
+    @Bean
+    @SentinelRestTemplate(fallbackClass = SentinelExceptionHandler.class, fallback = "globalFallBack",
+            blockHandlerClass = SentinelExceptionHandler.class, blockHandler = "globalBlockHandler")
+    @LoadBalanced
+    public RestTemplate restTemplate() {
+        return new RestTemplate();
+    }
+}
+```
+
+#### 整合OpenFeign
+
+`@EnableFeignClients`开启OpenFeign
+
+配置OpenFeign客户端接口
+
+```java
+@FeignClient(name = "nacos-provider", fallback = OpenFeignFallBack.class)
+public interface ProviderApi {
+    @GetMapping("portTimeout")
+    String portTimeout();
+
+    @GetMapping("port")
+    String port();
+}
+```
+
+配置OpenFeign FallBack类
+
+> !!!记得注入到Spring容器中
+
+```java
+@Component
+public class OpenFeignFallBack implements ProviderApi {
+    @Override
+    public String portTimeout() {
+        return "获取端口超时";
+    }
+
+    @Override
+    // 在这里左熔断降级是没有效果的
+    // @SentinelResource(value = "ProviderApi.port")
+    public String port() {
+        return "port back";
+    }
+}
+```
+
 ### SpringCloudGateway整合nacos
 
 ```xml
@@ -971,6 +1187,68 @@ server:
 启动即可通过dashboard进行网关层流控
 
 自定义流控处理方法, 请参考wiki
+
+### SpringCloud
+
+#### 权重路由
+
+```yaml
+spring:
+  application:
+    name: cloud-gateway
+
+  cloud:
+    nacos:
+      discovery:
+        username: nacos
+        password: nacos
+        namespace: public
+      # server-addr: 192.168.43.231:8841,192.168.43.231:8848,192.168.43.231:8843
+      server-addr: 127.0.0.1:8841
+
+    gateway:
+      discovery:
+        locator:
+          # 是否自动为每个服务生成以服务名为Path的路由
+          enabled: true
+          # 是否将每个服务名转为小写
+          lower-case-service-id: true
+      routes:
+        # 路由id, 唯一标识
+        - id: consumer
+          # 具体路由的uri, 可以使用lb://语法, 自动负载均衡
+          uri: lb://nacos-server
+          predicates:
+            # 路由path, 必须写成Path=
+            - Path=/user/**
+          filters:
+            # 去掉一个路由前缀, 即去掉user
+            - StripPrefix=1
+        - id: baidu
+          uri: https://www.baidu.com
+          predicates:
+            - Path=/aidu/**
+          filters:
+            - StripPrefix=1
+            
+          # 权重路由配置
+        - id: custom_route
+          # 不能使用lb, 只能用http配置不然无法配置权重路由
+          uri: http://localhost:7000
+          predicates:
+            - Path=/hello
+            - Weight=group1,2
+        - id: custom_route2
+          uri: http://localhost:7101
+          predicates:
+            - Path=/hello
+            - Weight=group1,1
+
+server:
+  port: 80
+```
+
+
 
 ## 其他组件
 
