@@ -18,7 +18,7 @@ centos下运行 `yum install docker-ce`即可安装最新版
     - docker run image_name:image_tag 不加任何参数 只会创建容器不会运行
     - docker run -it image_name:image_tag 运行指定镜像, i表示以交互模式运行, t表示给容器分配一个伪终端, it通常一起使用
         - 若退出终端, 容器也会关闭
-    - --rm 表示不保存容器资源, 容器关闭后就删除占用的空间, 用于开发测试
+    - --rm 表示不保存容器资源, 容器关闭后自动清理容器内部的用户数据, 用于开发测试
     - -d 后台运行容器
     - --name 指定该容器的名称
     - docker run -it --rm image_name:image_tag /bin/bash 表示运行容器时, 会执行的命令, 会覆盖Dockerfile中的cmd
