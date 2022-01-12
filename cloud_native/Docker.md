@@ -149,3 +149,70 @@ docker客户端想要从第三方仓库拉取镜像需要配置`/etc/docker/daem
 生成harbor仓库的tag `docker tag 镜像id 镜像服务地址/子目录/镜像名:镜像tag`
 
 生成对应tag后, 运行`docker push 镜像id 镜像服务地址/子目录/镜像名:镜像tag` 即可上传至harbor仓库
+
+## 容器跨宿主机通信
+
+> 建议使用容器编排工具, 实现容器跨宿主机通信
+
+### overlay
+
+> 借助consul实现跨宿主机通信
+
+下载consul并运行consul
+
+`docker pull consul`
+
+`docker run -d --name consul-overlay consul`
+
+
+
+在所有需要跨宿主机通信的容器的宿主机上更改`/etc/docker/daemon.json`配置
+
+```json
+{
+    "insecure-registries": [], 
+    "registry-mirrors": ["https://xxxxxxx.mirror.aliyuncs.com"], 
+    // consul地址
+    "cluster-store": "consul://192.168.150.101:8500",
+    // 本机地址
+    "cluster-advertise": "192.168.150.101:2375",
+    // 配置重启docker daemon server时, 不重启容器
+    "live-restore": true
+}
+```
+
+容器docker
+
+`systemctl restart docker`
+
+两台主机都配置好重启后, 可以再consul 的key/values/docker/nodes面板中看到所有注册上来的节点
+
+
+
+在node1创建网桥
+
+配置overlay网桥, 配置好后全部节点都会同步, 所有节点就都可以通过overlay网桥中指定的ip端通信了
+
+`docker create --driver overlay --ingress --subnet=172.31.0.0/16 --gateway=172.31.0.1 overlay`
+
+
+
+noed1开启nginx
+
+`docker run -d --network overlay nginx`
+
+node2开启centos
+
+`docker run -it --netork overlay centos`
+
+先开启node1上的nginx, 所以nginx的容器ip是`172.31.0.2`, 在node2上直接可以访问到node1容器中的nginx
+
+`curl 172.31.0.2`
+
+### macvlan
+
+> 需要关闭mac地址, 使用虚拟网卡, 导致容器无法访问公网
+>
+> 且配置后内网, 消息广播会广播到所有容器, 降低性能, 基本上不适用
+>
+> 使用方式自行搜索
