@@ -23,14 +23,44 @@ loadXml[加载xml] --> resolveXml[解析xml]
 
 ```mermaid
 graph TB
+%% 主流程
 设置配置文件路径与系统环境变量 --> refresh[refresh<br>IOC容器, 这里就是IOC容器的核心操作]
 	--> prepareRefresh[prepareRefresh<br>刷新前的准备操作]
 	--> obtainFreshBeanFactory[obtainFreshBeanFactory<br>获取新的bean对象工厂]
-	--> prepareBeanFactory
-obtainFreshBeanFactory__INFO(创建DefaultListableBeanFactory对象<br>加载Xml配置信息即loadBeanDefinitions) --> obtainFreshBeanFactory
+	--> prepareBeanFactory[prepareBeanFactory<br>为beanFactory做准备]
+	--> postProcessBeanFactory[beanFactoryPostProcessor<br>默认空实现用于扩展]
+	--> invokeBeanFactoryPostProcessors[invokeBeanFactoryPostProcessors<br>执行beanFactoryPostProcessor<br>使用多个循环分开处理有序与无序postProcessor]
+	--> registerBeanPostProcessors[registerBeanPostProcessors<br>注册beanPostProcessor<br>同样使用多个循环分开处理有序与无序postProcessor]
+	--> initMessageSource[initMessageSource<br>国际化操作]
+	--> initApplicationEventMulticaster[initApplicationEventMulticaster<br>初始事件广播器]
+	--> onRefresh[onRefresh<br>初始化特定的bean对象, 用于扩展<br>例如spring mvc会在这里创建servlet服务器]
+	--> registerListeners[registerListeners<br>初始化监听器]
+	--> finishBeanFactoryInitialization[finishBeanFactoryInitialization<br>实例化所有非懒加载的单例bean]
+	--> finishRefresh[finishRefresh<br>最后一步发布相应的事件]
+
+%% 主流程INFO
+obtainFreshBeanFactory__INFO(创建DefaultListableBeanFactory对象<br>加载Xml配置信息即loadBeanDefinitions<br>配置会被加载到DefaultListableBeanFactory的beanDefinitionMap中) --> obtainFreshBeanFactory
+
 prepareRefresh__INFO(记录容器启动时间<br>容器运行状态<br>验证环境变量等) --> prepareRefresh
+
+prepareBeanFactory__INFO(配置标准上下文例如ClassLoder与BeanPostProcessor) --> prepareBeanFactory
+
+finishBeanFactoryInitialization__INFO(finishBeanFactoryInitialization<br>实例化的具体流程) --> finishBeanFactoryInitialization
+finishBeanFactoryInitialization__INFO --> preInstantiateSingletons[preInstantiateSingletons<br>开始实例化, 遍历beanNames]
+	--> getBean[getBean<br>无论是FactoryBean还是普通Bean都会走这个方法]
+	--> doGetBean[doGetBean<br>真正获取bean的方法]
+	--> getSingleton_first[第一次getSingleton<br>尝试从IOC容器中获取单例对象]
+	--> getSingleton_second[第二次getSingleton<br>调用String, ObjectFactory重载]
+	--> createBean[createBean<br>调用doCrateBean]
+	--> doCreateBean[doCreateBean<br>具体创建bean对象<br>通过反射创建对象]
+	
+finishRefresh__INFO(完成刷新操作发布相应事件) --> finishRefresh
+finishRefresh__INFO --> clearResourceCaches[clearResourceCaches<br>清楚上下文缓存, 例如ASM元数据]
+					--> initLifecycleProcessor[initLifecycleProcessor<br>初始化生命周期处理器]
+					--> getLifecycleProcessor_onRefresh[getLifecycleProcessor_onRefresh<br>回调生命周期处理器的onRefresh事件]
+					--> publishEvent[publishEvent<br>获取事件广播器并发布事件]
+					--> resetCommonCaches[resetCommonCaches<br>清除通用缓存<br>例如反射缓存, 注解缓存等]
 ```
 
-
-
 ## AOP
+
