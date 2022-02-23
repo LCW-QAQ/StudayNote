@@ -21,6 +21,8 @@ loadXml[加载xml] --> resolveXml[解析xml]
 
 #### 源码流程图
 
+> 核心逻辑就是refresh方法
+
 ```mermaid
 graph TB
 %% 主流程
@@ -61,6 +63,56 @@ finishRefresh__INFO --> clearResourceCaches[clearResourceCaches<br>清楚上下�
 					--> publishEvent[publishEvent<br>获取事件广播器并发布事件]
 					--> resetCommonCaches[resetCommonCaches<br>清除通用缓存<br>例如反射缓存, 注解缓存等]
 ```
+
+### SpringIOC 从ClassPathXmlApplicationContext构造器开始
+
+> 以ClassPathXmlApplicationContext为列
+
+```java
+public ClassPathXmlApplicationContext(
+    String[] configLocations, boolean refresh, @Nullable ApplicationContext parent)
+    throws BeansException {
+	// 调用父类构造器, 初始化全局属性.
+    // 例如容器状态标识active, 全局唯一id, 全局ioc锁等
+    super(parent);
+    // 设置配置文件路径, 初始化Enviroment对象(存储环境变量, 系统环境变量与用户给定的环境变量)
+    setConfigLocations(configLocations);
+    if (refresh) {
+        // IOC核心逻辑
+        refresh();
+    }
+}
+```
+
+#### super
+
+调用父类构造器, 创建全局属性, 全局唯一id, 初始化资源解析器(解析Ant-Style风格的模式), 并设置父容器
+
+```mermaid
+graph TB
+ClassPathXmlApplicationContext --> AbstractXmlApplicationContext
+			--> AbstractRefreshableConfigApplicationContext
+			--> AbstractApplicationContext[AbstractApplicationContext<br>主要的初始化都在这里]
+AbstractApplicationContext__INFO[初始化全局属性<br>例如容器状态标识active, 全局唯一id, 全局ioc锁等] --> AbstractApplicationContext
+AbstractApplicationContext__INFO --> getResourcePatternResolver
+	--> PathMatchingResourcePatternResolver[PathMatchingResourcePatternResolver<br>创建Ant-Style风格的模式解析器, 用于解析Resource实例]
+```
+
+#### setConfigLocations
+
+> 设置配置文件路径, 初始化Enviroment对象(存储环境变量, 系统环境变量与用户给定的环境变量)
+
+```mermaid
+graph TB
+setConfigLocations --> resolvePath[resolvePath<br>解析给定的路径, 如有必要, 将占位符替换为相应的环境属性值]
+	--> getEnvironment[getEnvironment<br>该方法为懒加载<br>主要加载systemProperties与systemEnvironment<br>systemProperties为jvm提供的环境变量类似于-Dargs=xxx<br>systemEnvironment为系统环境变量]
+	--> resolveRequiredPlaceholders
+	--> doResolvePlaceholders[doResolvePlaceholders<br>解析Ant-Style风格, 替换占位符]
+```
+
+#### refresh
+
+> IOC核心方法, 根据配置刷新整个IOC容器
 
 ## AOP
 
