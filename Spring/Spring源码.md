@@ -114,5 +114,18 @@ setConfigLocations --> resolvePath[resolvePath<br>解析给定的路径, 如有�
 
 > IOC核心方法, 根据配置刷新整个IOC容器
 
+##### prepareRefresh
+
+> 为刷新上下文做准备
+
+```mermaid
+graph TB
+prepareRefresh --> updateSomething[设置启动时间, 容器状态]
+	--> initPropertySources[initPropertySources<br>初始化上下文`配置文件`中所有的占位符<br>默认空实现, 用于扩展, 可以在spring mvc中看到相应的扩展]
+	--> getEnvironment.validateRequiredProperties[getEnvironment.validateRequiredProperties<br>验证必要参数<br>若没有必要参数则抛出MissingRequiredPropertiesException]
+	--> _create_earlyApplicationListeners[创建earlyApplicationListeners监听器集合<br>该集合默认为空, 有可能有值<br>例如springboot中自动配置类会初始化一些早起的应用程序监听器]
+	--> _create_earlyApplicationEvents[创建earlyApplicationEvents事件集合]
+```
+
 ## AOP
 
