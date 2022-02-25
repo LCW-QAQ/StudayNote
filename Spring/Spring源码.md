@@ -197,5 +197,9 @@ parseBeanDefinitions__INFO --> parseDefaultElement_or_parseCustomElement[parseDe
 * 添加ApplicationListenerDetector应用程序事件监听器BeanPostProcessor
 * 初始化各种Environment, 注册到beanFactory中
 
+##### postProcessBeanFactory
+
+>扩展方法
+
 ## AOP
 
