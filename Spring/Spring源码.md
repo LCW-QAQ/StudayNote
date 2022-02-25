@@ -64,7 +64,34 @@ finishRefresh__INFO --> clearResourceCaches[clearResourceCaches<br>清楚上下�
 					--> resetCommonCaches[resetCommonCaches<br>清除通用缓存<br>例如反射缓存, 注解缓存等]
 ```
 
-### SpringIOC 从ClassPathXmlApplicationContext构造器开始
+### SpringBean生命周期
+
+```mermaid
+graph TB
+instantiation_BeanFactoryPostProcessor[实例化BeanFactoryPostProcessor] --> invoke_BeanFactoryPostProcessor_postProcessBeanFactory[执行BeanFactoryPostProcessor#postProcessBeanFactory]
+	--> instantiation_BeanPostProcessor[实例化BeanPostProcessor]
+	--> instantiation_InstantiationAwareBeanPostProcessorAdapter[实例InstantiationAwareBeanPostProcessorAdapter]
+	--> 执行InstantiationAwareBeanPostProcessor的postProcessBeforeInstantiation方法
+	--> 执行构造器即创建实例
+	--> 执行InstantitationAwareBeanPostProcessor的postProcessAfterInstantiation方法
+	--> bean的属性注入
+	--> 调用BeanNameAware的setBeanName
+	--> 调用BeanFactoryAware的setBeanFactory
+	--> 执行BeanPostProcessor的postProcessBeforeInitialization
+	--> 调用InitailizingBean的afterPropertiesSet
+	--> 调用init-method
+	--> 执行BeanPostProcessor的postProcessAfterInitialization
+	--> 执行InstantiationAwareBeanPostProcessor的postProcessAfterInitialization
+	--> 销毁容器
+	--> 调用DisposibleBean的destroy
+	--> 调用destroy-method
+```
+
+
+
+
+
+### Spring 源码流程
 
 > 以ClassPathXmlApplicationContext为列
 
@@ -93,7 +120,7 @@ graph TB
 ClassPathXmlApplicationContext --> AbstractXmlApplicationContext
 			--> AbstractRefreshableConfigApplicationContext
 			--> AbstractApplicationContext[AbstractApplicationContext<br>主要的初始化都在这里]
-AbstractApplicationContext__INFO[初始化全局属性<br>例如容器状态标识active, 全局唯一id, 全局ioc锁等] --> AbstractApplicationContext
+AbstractApplicationContext__INFO(初始化全局属性<br>例如容器状态标识active, 全局唯一id, 全局ioc锁等) --> AbstractApplicationContext
 AbstractApplicationContext__INFO --> getResourcePatternResolver
 	--> PathMatchingResourcePatternResolver[PathMatchingResourcePatternResolver<br>创建Ant-Style风格的模式解析器, 用于解析Resource实例]
 ```
@@ -104,7 +131,8 @@ AbstractApplicationContext__INFO --> getResourcePatternResolver
 
 ```mermaid
 graph TB
-setConfigLocations --> resolvePath[resolvePath<br>解析给定的路径, 如有必要, 将占位符替换为相应的环境属性值]
+setConfigLocations --> setSomeVariable[设置容器启动时间<br>设置活跃状态为true<br>设置关闭状态为false]
+	--> resolvePath[resolvePath<br>解析给定的路径, 如有必要, 将占位符替换为相应的环境属性值]
 	--> getEnvironment[getEnvironment<br>该方法为懒加载<br>主要加载systemProperties与systemEnvironment<br>systemProperties为jvm提供的环境变量类似于-Dargs=xxx<br>systemEnvironment为系统环境变量]
 	--> resolveRequiredPlaceholders
 	--> doResolvePlaceholders[doResolvePlaceholders<br>解析Ant-Style风格, 替换占位符]
@@ -126,6 +154,35 @@ prepareRefresh --> updateSomething[设置启动时间, 容器状态]
 	--> _create_earlyApplicationListeners[创建earlyApplicationListeners监听器集合<br>该集合默认为空, 有可能有值<br>例如springboot中自动配置类会初始化一些早起的应用程序监听器]
 	--> _create_earlyApplicationEvents[创建earlyApplicationEvents事件集合]
 ```
+
+##### obtainFreshBeanFactory
+
+> 刷新并获取内部的beanFactory
+
+```mermaid
+graph TB
+obtainFreshBeanFactory --> refreshBeanFactory[refreshBeanFactory<br>刷新beanFactory]
+	-->|已存在beanFactory| destroyBeans[destroyBeans<br>销毁工厂中的所有bean对象] --> closeBeanFactory[closeBeanFactory<br>关闭操作很简单, 将beanFactory与serializationId置空]
+refreshBeanFactory -->|不存在beanFactory| createBeanFactory[createBeanFactory<br>创建DefaultListableBeanFactory对象<br>beanFactory实例, 包含beanDefinitionMap, 三级缓存等]
+	--> customizeBeanFactory[customizeBeanFactory<br>用于扩展]
+	--> loadBeanDefinitions[loadBeanDefinitions<br>根据配置文件加载beanDefinitions到beanDefinitionMap]
+loadBeanDefinitions__INFO(XmlBeanDefinitionReader流程) --> loadBeanDefinitions
+loadBeanDefinitions__INFO -->  XmlBeanDefinitionReader.loadBeanDefinitions[XmlBeanDefinitionReader.loadBeanDefinitions<br>通过reader读取给定一个或多个配置文件信息]
+	--> doLoadBeanDefinitions
+	--> registerBeanDefinitions[registerBeanDefinitions<br>注册bean信息到beanDefinitionMap]
+	--> doRegisterBeanDefinitions
+	--> preProcessXml
+	--> parseBeanDefinitions[parseBeanDefinitions]
+	--> postProcessXml
+parseBeanDefinitions__INFO(根据命名空间, 解析默认标签与自定义标签beanDefinitions) --> parseBeanDefinitions
+parseBeanDefinitions__INFO --> parseDefaultElement_or_parseCustomElement[parseDefaultElement_or_parseCustomElement]
+	--> getNamespaceHandlerResolver#resolve[getNamespaceHandlerResolver#resolve<br>根据命名空间匹配对应的handler]
+	--> handler#parse[handler#parse<br>使用命名空间处理器解析beanDefinitions]
+	--> findParserForElement[findParserForElement<br>找到该命名空间下对应的element元素并返回beanDefinitionParser]
+	--> beanDefinitionParser#parse[beanDefinitionParser#parse<br>进行具体解析<br>例如compoent-scan标签对应ComponentScanBeanDefinitionParser<br>通过ClassPathBeanDefinitionScanner#doScan扫描注解并添加至beanDefinitinoMap]
+```
+
+
 
 ## AOP
 
