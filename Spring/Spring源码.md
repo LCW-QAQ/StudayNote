@@ -158,6 +158,8 @@ prepareRefresh --> updateSomething[设置启动时间, 容器状态]
 ##### obtainFreshBeanFactory
 
 > 刷新并获取内部的beanFactory
+>
+> 加载所有beanDefinition信息, Component, Service, Repository等注解也是在这里解析的
 
 ```mermaid
 graph TB
@@ -179,10 +181,21 @@ parseBeanDefinitions__INFO --> parseDefaultElement_or_parseCustomElement[parseDe
 	--> getNamespaceHandlerResolver#resolve[getNamespaceHandlerResolver#resolve<br>根据命名空间匹配对应的handler]
 	--> handler#parse[handler#parse<br>使用命名空间处理器解析beanDefinitions]
 	--> findParserForElement[findParserForElement<br>找到该命名空间下对应的element元素并返回beanDefinitionParser]
-	--> beanDefinitionParser#parse[beanDefinitionParser#parse<br>进行具体解析<br>例如compoent-scan标签对应ComponentScanBeanDefinitionParser<br>通过ClassPathBeanDefinitionScanner#doScan扫描注解并添加至beanDefinitinoMap]
+	--> beanDefinitionParser#parse[beanDefinitionParser#parse<br>进行具体解析<br>例如compoent-scan标签对应ComponentScanBeanDefinitionParser<br>通过ClassPathBeanDefinitionScanner#doScan扫描注解并添加至beanDefinitinoMap<br>同时还会注册各种BeanPostProcessor用于实例化bean解析注解]
 ```
 
+##### prepareBeanFactory
 
+> 准备beanFactory
+
+* 设置BeanClassLoader
+* bean spring el表达式解析器
+* 设置PropertyEditorRegistrar, 属性处理器, 列如将字符串`A省_B市_C区`解析为Address对象
+* 添加ApplicationContextAwareProcessor
+* ignoreDependencyInterface忽略各种Aware生命周期接口, 后续实例化bean后会在invokeAwareMethods里执行, 这里不需要执行
+* registerResolvableDependency预装配各种对象, 例如BeanFactory, ApplicationContext, ResourceLoader
+* 添加ApplicationListenerDetector应用程序事件监听器BeanPostProcessor
+* 初始化各种Environment, 注册到beanFactory中
 
 ## AOP
 
