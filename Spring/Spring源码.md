@@ -160,6 +160,8 @@ prepareRefresh --> updateSomething[设置启动时间, 容器状态]
 > 刷新并获取内部的beanFactory
 >
 > 加载所有beanDefinition信息, Component, Service, Repository等注解也是在这里解析的
+>
+> 解析出来的beanDefinition包含各种定义信息, 例如AnnotatedBeanDefinition注解定义,  ScannedGenericBeanDefinition表示需要扫包, AbstractBeanDefinition普通的没有其他Spring注解修饰列如@ComponentScan
 
 ```mermaid
 graph TB
@@ -200,6 +202,34 @@ parseBeanDefinitions__INFO --> parseDefaultElement_or_parseCustomElement[parseDe
 ##### postProcessBeanFactory
 
 >扩展方法
+
+##### invokeBeanFactoryPostProcessors
+
+> 执行beanFactoryPostProcessors, 优先执行有顺序的即被Ordered或PriorityOrdered标记的, 最后执行没有顺序的
+>
+> 如果beanFactory instanceof BeanDefinitionRegistry, 那么会先执行BeanDefinitionRegistryPostProcessor, 仍然是优先执行Ordered或PriorityOrdered, 最后执行没有顺序的
+>
+> 执行流程中主要有三类BeanFactoryPostProcessor:
+>
+> * 用户手动加入的BeanFactoryPostProcessor
+>     * 配置文件中定义的
+>     * 调用addBeanFactoryPostProcessor
+> * 实现了BeanDefinitionRegistryPostProcessor接口
+> * 实现了BeanFactoryPostProcessor接口
+
+```mermaid
+graph TB
+invokeBeanFactoryPostProcessors -->|对BeanDefinitionRegistry的子类特殊处理| invokeSortBeanDefinitionRegistryPostProcessor[先执行PriorityOrdered修饰, 然后执行Ordered修饰]
+	--> invokeNonSortBeanDefinitionRegistryPostProcessor[执行没有顺序的BeanDefinitionRegistryPostProcessor]
+invokeBeanFactoryPostProcessors -->|普通的BeanFactoryPostProcessor| invokeSortBeanFactoryPostProcessor[先执行PriorityOrdered修饰, 然后执行Ordered修饰]
+	--> invokeNonSortBeanFactoryPostProcessor[执行没有顺序的BeanFactoryPostProcessor]
+```
+
+###### ConfigurationClassPostProcessor
+
+> 在开启compoent-scan时, 该方法会注册一个ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接口
+>
+> 用于处理@Compoent以及子注解修饰的类的其他注解信息, @Import, @CompoentScan, @ImportResource等
 
 ## AOP
 
