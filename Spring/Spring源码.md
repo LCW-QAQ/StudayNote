@@ -161,7 +161,7 @@ prepareRefresh --> updateSomething[设置启动时间, 容器状态]
 >
 > 加载所有beanDefinition信息, Component, Service, Repository等注解也是在这里解析的
 >
-> 解析出来的beanDefinition包含各种定义信息, 例如AnnotatedBeanDefinition注解定义,  ScannedGenericBeanDefinition表示需要扫包, AbstractBeanDefinition普通的没有其他Spring注解修饰列如@ComponentScan
+> 解析出来的beanDefinition包含各种定义信息, 例如AnnotatedBeanDefinition加了注解的bean,  ScannedGenericBeanDefinition同样是加了注解的bean是AnnotatedBeanDefinition的子类, AbstractBeanDefinition普通的没有其他Spring注解修饰列如@ComponentScan
 
 ```mermaid
 graph TB
@@ -233,3 +233,79 @@ invokeBeanFactoryPostProcessors -->|普通的BeanFactoryPostProcessor| invokeSor
 
 ## AOP
 
+没有依赖的AOP:
+
+1. A对象需要被代理
+    - 普通bean对象aop, 是在bean对象被实例化且属性填充完成后, 通过BeanPostProcessor子类InstantiationAwareBeanPostProcessor子类AnnotationAwareAspectJAutoProxyCreator#postProcessAfterInitialization来处理, 返回代理bean对象
+
+有依赖的AOP, 以有依赖循环为例(这种情况最复杂), 有三种情况:
+
+1. A依赖B, A是非代理bean B是需要代理的bean
+
+    - 先创建A, A被加入singeltonFactories
+    - 在populate属性填充时, 依赖B, 则创建B对象
+    - B对象是代理对象, 依赖于A, getSingelton(A), 从singletonFactories获取A对象的早期引用即AbstractAutowireCapableBeanFactory#getEarlyBeanReference, 由于A对象无需代理, 直接返回之前创建好的A对象(此时属性还未填充完毕), 并将A对象存入earlySingletonObjects. 此时A对象属性还未填充, 需要等待B对象创建完成
+    - B属性填充后, 走普通Bean对象代理流程
+    - 返回被代理的B对象, 填充A
+    - 最后A对象被创建完毕
+
+2. A依赖B, A是需要代理的bean, B是非代理bean
+
+    - 先创建A, A被加入singeltonFactories
+
+    - 在populate属性填充时, 依赖B, 则创建B对象
+
+    - B对象依赖于A, getSingleton(A), 从singletonFactories获取A对象的早期引用即AbstractAutowireCapableBeanFactory#getEarlyBeanReference, 由于A对象需要被代理, 会由AnnotationAwareAspectJAutoProxyCreator创建代理对象, 存入earlySingletonObjects, 然后返回给B对象
+
+        - ```java
+            protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+               Object exposedObject = bean;
+               if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+                  for (SmartInstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().smartInstantiationAware) {
+                     exposedObject = bp.getEarlyBeanReference(exposedObject, beanName);
+                  }
+               }
+               return exposedObject;
+            }
+            ```
+
+    - B对象属性填充完毕, 返回给A
+
+    - A对象属性填充完毕, 走普通Bean对象代理流程, 但是由于之前生成了A对象向的代理, 此时应该在earlySingletonObjects中, 所以这里不会再次创建代理对象了
+
+    - A对象会在执行玩initializeBean(即执行awre方法与beanPostProcessor后), 再次getSingleton, 获取earlySingletonObjects存储的代理A对象, 将代理A对象返回
+
+        - ```java
+            // class AbstractAutowireCapableBeanFactory
+            protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)
+                  throws BeanCreationException {
+                
+               // 省略...
+              
+               // 填充属性与执行声明周期接口和BeanPostProcessor
+            
+               // 允许早期引用
+               if (earlySingletonExposure) {
+                   // 由于A对象在B依赖A时, 被创建且是代理bean
+                  Object earlySingletonReference = getSingleton(beanName, false);
+                   // 能从earlySingletonObjects中获取到代理A对象
+                  if (earlySingletonReference != null) {
+                     if (exposedObject == bean) {
+                         // 将返回的对象设为代理A对象
+                        exposedObject = earlySingletonReference;
+                     }
+                     else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+                        // 省略...
+                     }
+                  }
+               }
+               // 省略...
+               return exposedObject;
+            }
+            ```
+        
+    - 最后A对象创建完毕
+    
+3. A依赖B, AB都是需要代理的bean
+
+    - 同上
