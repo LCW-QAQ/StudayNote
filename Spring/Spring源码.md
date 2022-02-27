@@ -626,6 +626,28 @@ registerBeanPostProcessors
     --> registerApplicationListenerDetector[再次注册ApplicationListenerDetector, prepareBeanFactory时已经注册过<br>再次注册是为了将它移动到处理链的末端, 用于获取代理]
 ```
 
+##### initMessageSource
+
+> 初始化国际化资源, 默认注册DelegatingMessageSource类
+
+##### initApplicationEventMulticaster
+
+> 初始化应用程序广播器, 默认注册SimpleApplicationEventMulticaster类
+
+##### onRefresh
+
+> 扩展方法, 例如mvc在这里创建webServer
+
+##### registerListeners
+
+> initApplicationEventMulticaster方法注册了SimpleApplicationEventMulticaster类
+>
+> 这里AbstractApplicationContext#getApplicationEventMulticaster.addApplicationListener注册监听器, 先注册spring内部监听器, 再注册用户自定义的监听器.
+>
+> springboot中会有很多事件处理, 可以再springboot中看到详细处理
+>
+> 同时会发布一些早期事件
+
 ## AOP
 
 没有依赖的AOP:
