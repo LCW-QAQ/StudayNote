@@ -611,6 +611,21 @@ protected AutoConfigurationEntry getAutoConfigurationEntry(AnnotationMetadata an
 }
 ```
 
+##### registerBeanPostProcessors
+
+> 实例化并注册所有beanPostProcessor
+
+```mermaid
+graph TB
+registerBeanPostProcessors
+	--> PostProcessorRegistrationDelegate#registerBeanPostProcessors[PostProcessorRegistrationDelegate#registerBeanPostProcessors<br>利用委托类注册BeanPostProcessor]
+	--> registerPriorityOrdered[注册PriorityOrderedPostProcessors]
+    --> registerOrdered[注册OrderedPostProcessors]
+    --> registerNonOrdered[注册NonOrderedPostProcessors]
+    --> registerInternal[注册InternalPostProcessors]
+    --> registerApplicationListenerDetector[再次注册ApplicationListenerDetector, prepareBeanFactory时已经注册过<br>再次注册是为了将它移动到处理链的末端, 用于获取代理]
+```
+
 ## AOP
 
 没有依赖的AOP:
