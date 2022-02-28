@@ -89,6 +89,22 @@ instantiation_BeanFactoryPostProcessor[实例化BeanFactoryPostProcessor] --> in
 	--> 调用destroy-method
 ```
 
+精简版
+
+```mermaid
+graph TB
+instantitateBean[实例化bean] --> setAttr[设置bean属性]
+	--> invokeAware[执行Aware接口]
+	--> BeanPostProcessorBefore[BeanPostProcessor前置处理]
+	--> invokeAfterPropertiesSet[检查是否是InitializingBean, 已决定是否调用afterPropertiesSet]
+	--> invokeInitMethod[执行init-method]
+	--> BeanPostProcessorAfter[BeanPostProcessor后置处理]
+	--> registerDisposableBean[注册Disposable销毁相关回调]
+	--> useBean[使用Bean]
+	--> DisposableBean[如果实现了DisposableBean, 则调用destroy回调]
+	--> invokeDestroyMethod[执行自定义销毁方法]
+```
+
 
 
 
@@ -648,14 +664,99 @@ registerBeanPostProcessors
 >
 > 同时会发布一些早期事件
 
+##### finishBeanFactoryInitialization
+
+> 实例化beanFactory中所有bean
+>
+> 这里涉及Bean实例化, 属性填充, PostProcessor注解处理, AOP代理, 循环依赖等问题
+
+###### 什么是三级缓存
+
+其实就是DefaultSingletonBeanRegistry类中的三个成员变量
+
+```java
+/** Cache of singleton objects: bean name to bean instance. */
+// 存储创建好的bean
+private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
+
+/** Cache of singleton factories: bean name to ObjectFactory. */
+// 存储还没初始化完成的bean, 主要用于处理依赖循环中的AOP
+private final Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
+
+/** Cache of early singleton objects: bean name to bean instance. */
+// 用于解决依赖循环, 提前暴露bean对象引用
+private final Map<String, Object> earlySingletonObjects = new ConcurrentHashMap<>(16);
+```
+
+###### doCreateBean创建bean的流程
+
+> AbstractAutowireCapableBeanFactory#doCraeteBean
+>
+> 实例化bean对象的方法, 包括实例化, 属性填充, Aware生命周期接口, BeanPostProcessor的处理以及无依赖循环的AOP代理
+
+```mermaid
+graph TB
+doCreateBean[doCreateBean<br>具体创建bean的方法] --> createBeanInstance[createBeanInstance<br>创建对象实例, 还没有填充属性<br>可以使用Supplier, FactoryMethod, autowireConstructor以及反射的方式创建]
+	--> applyMergedBeanDefinitionPostProcessors[applyMergedBeanDefinitionPostProcessors<br>CommonAnnotationBeanPostProcessor在这里进行了解析了Resource, PostConstruct, PreDestroy等注解的处理]
+	--> addSingletonFactory[addSingletonFactory<br>如果支持暴露早期引用, 就会调用该方法, 将实例化但是还未填充属性和初始化的Bean暴露到singletonFactories中, 以便在依赖循环处理AOP]
+	--> populateBean[populateBean<br>填充bean属性<br>如果有依赖的bean就回去先创建依赖的bean走同样的流程<br>如果出现依赖循环, 详见Spring如何解决依赖循环]
+	--> initializeBean[initializeBean]
+	--> earlySingletonExposure[这里还会有一个判断, 如果允许暴露早期对象那么会再次getSingleton当前bean, 获取出来的不是空, 说明出现了循环依赖<br>当前bean还没加入到容器中, 是依赖循环导致, 当前bean提前创建<br>spring会在这里检查是否是可以处理的依赖循环, 如果不可处理会抛出BeanCurrentlyInCreationException异常]
+	--> registerDisposableBeanIfNecessary[registerDisposableBeanIfNecessary<br>如果bean实现了DisposableBean那么会注册DisposableBean, DestructionCallback]
+	
+initializeBean__INFO(初始化bean, 涉及Aware, BeanPostProcessor的调用) --> initializeBean
+initializeBean__INFO --> invokeAwareMethods[invokeAwareMethods<br>执行Aware接口的方法]
+	--> applyBeanPostProcessorsBeforeInitialization[applyBeanPostProcessorsBeforeInitialization<br>执行BeanPostProcessor的postProcessBeforeInitialization]
+	--> invokeInitMethods[invokeInitMethods<br>执行指定init方法]
+	--> applyBeanPostProcessorAfterInitialization[applyBeanPostProcessorsBeforeInitialization<br>执行BeanPostProcessor的postProcessAfterInitialization<br>如果是没有依赖循环的AOP, 会在这里被替换成代理对象]
+```
+
+###### Spring如何解决依赖循环
+
+当A类与B类出现依赖循环时, 有三种情况:
+
+1. AB无需代理
+
+    - ```mermaid
+        graph TB
+        doGetBeanA[doGetBeanA获取bean容器中没有时才会创建] 
+        	--> createA[创建A] --> instantitateA[实例化A]
+        	--> addSingletonFactoryA[将A类实例存储singletonFactories三级缓存中]
+        	--> populateA[填充A类实例的属性]
+        	--> initializingA[初始化A, 调用Aware, BeanPostProcessor]
+        populateA_info(填充属性时, 发现依赖B, 现在去创建B) --> populateA
+        populateA_info --> doGetBeanB[doGetBeanB获取bean容器中没有时才会创建]
+        	--> createB[创建B] --> instantitateB[实例化B]
+        	--> addSingletonFactoryB[将B类实例存储singletonFactories三级缓存中]
+        	--> populateB[填充B类实例的属性]
+        	--> initializingB[初始化B, 调用Aware, BeanPostProcessor]
+        populateB_info(填充属性时, 发现依赖A, 现在去创建A) --> populateB
+        populateB_info --> doGetBeanA_Align[doGetBeanA获取bean, 此时容器中三级缓存singletonFactories中有A<br>直接通过ObjectFactory获取A, 并将A存储二级缓存earlySingletonObjects中<br>这里会处理AOP, 但是现在是没有AOP的情况]
+        	--> returnA[返回获取的A对象, 给B做属性填充]
+        ```
+
+2. A需要代理, B无需代理, Spring容器先创建A
+
+    - 详见有循环依赖的AOP
+
+3. B无需代理, A需要代理, Spring容器先创建B
+
+    - 详见有循环依赖的AOP
+
+4. AB都需要代理
+
+    - 详见有循环依赖的AOP
+
 ## AOP
 
-没有依赖的AOP:
+### 没有依赖循环的AOP
 
 1. A对象需要被代理
     - 普通bean对象aop, 是在bean对象被实例化且属性填充完成后, 通过BeanPostProcessor子类InstantiationAwareBeanPostProcessor子类AnnotationAwareAspectJAutoProxyCreator#postProcessAfterInitialization来处理, 返回代理bean对象
 
-有依赖的AOP, 以有依赖循环为例(这种情况最复杂), 有三种情况:
+### 有依赖循环的AOP
+
+(这种情况最复杂), 有三种情况:
 
 1. A依赖B, A是非代理bean B是需要代理的bean
 
@@ -726,3 +827,253 @@ registerBeanPostProcessors
 3. A依赖B, AB都是需要代理的bean
 
     - 同上
+
+### 依赖循环与三级缓存
+
+以下摘自 https://www.jianshu.com/p/64d42221768
+
+
+
+参考文章：[Spring 为何需要三级缓存解决循环依赖，而不是二级缓存](https://links.jianshu.com/go?to=https%3A%2F%2Fwww.cnblogs.com%2Fsemi-sub%2Fp%2F13548479.html)
+
+[Spring是如何利用"三级缓存"巧妙解决Bean的循环依赖问题](https://links.jianshu.com/go?to=https%3A%2F%2Fcloud.tencent.com%2Fdeveloper%2Farticle%2F1497692)
+
+个人理解：
+ 1、其实把getEarlyBeanReference生成的对象直接保存到二级缓存，无需三级缓存用ObjectFacotry封装原始bean也可以解决循环依赖。三级缓存感觉纯粹是为了延迟调用aop逻辑而已。
+
+2、其实把getEarlyBeanReference生成的对象直接暴露到一级缓存也是可以的。只要引用的地址不变，谁要用就提前给谁。初始化动作可以后面慢慢做。只要引用不变，它初始化完成后，所有引用它的bean都自然而然的能得到完成的该bean。可能spring担心一级缓存既用来存放单例bean，又用来存放提前暴露的bean，会引起混乱。所以，上面徐庶老师说的，只要胆子大，一级缓存够用。解决循环依赖的核心，不在乎几级缓存，而在于提前暴露引用地址即可。
+
+#### 一、先交代下什么是循环依赖，什么是三级缓存
+
+循环依赖：A依赖B，B依赖A
+ 三级缓存：
+
+
+
+```dart
+//一级缓存，用来存放初始化完成的单例bean
+Map<String, Object> singletonObjects;
+//二级缓存，用来存放提前暴露的原始bean
+Map<String, Object> earlySingletonObjects;
+//三级缓存，用来存放 “包装提前暴露的原始bean”的ObjectFactory对象
+Map<String, ObjectFactory<?>> singletonFactories;
+```
+
+有人可能会问，提前暴露的对象已经存放在二级缓存了，为啥还要在三级缓存中存放呢？下文会详细解释。
+
+#### 二、循环依赖的解决
+
+
+
+```dart
+    protected <T> T doGetBean(
+            final String name, final Class<T> requiredType, final Object[] args, boolean typeCheckOnly)
+            throws BeansException {
+
+        final String beanName = transformedBeanName(name);
+        Object bean;
+
+        // Eagerly check singleton cache for manually registered singletons.
+        Object sharedInstance = getSingleton(beanName);
+        .....//省略
+```
+
+getBean的时候，一上来就先去拿一下提前暴露的bean对象。
+
+getSingleton方法如下：
+
+
+
+```kotlin
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+        //先去一级缓存拿。新创建的bean，这里一定拿不到
+        Object singletonObject = this.singletonObjects.get(beanName);
+        //拿不到初始化完成的bean，且该bean正在被创建中
+        if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+            synchronized (this.singletonObjects) {
+        //优先去二级缓存拿，如果没有再去三级缓存拿。有了，就直接返回。
+                singletonObject = this.earlySingletonObjects.get(beanName);
+                if (singletonObject == null && allowEarlyReference) {
+            //最后一步，去三级缓存拿
+                    ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+                    if (singletonFactory != null) {
+        //调用三级缓存ObjectFactory的getObject得到提前暴露的对象。
+                        singletonObject = singletonFactory.getObject();
+        //放到二级缓存中，然后删除三级缓存。可见：同一个提前暴露的bean，只能要么在三级缓存，要么在二级缓存。
+                        this.earlySingletonObjects.put(beanName, singletonObject);
+                        this.singletonFactories.remove(beanName);
+                    }
+                }
+            }
+        }
+        return (singletonObject != NULL_OBJECT ? singletonObject : null);
+    }
+```
+
+我们肯定会有疑问，不就去拿一个尚未初始化完成的bean对象而已嘛？有一个地方存一下，这里取出来，不就行了嘛。为啥非要在搞一个三级缓存呢？
+ 想知道三级缓存做了啥，就要看下三级缓存的ObjectFactory.getObject到底做了啥？
+
+#### 三、三级缓存的ObjectFactory.getObject到底做了啥？
+
+提前暴露对象的代码在doCreateBean里面。如下：
+
+
+
+```dart
+protected Object doCreateBean(final String beanName, final RootBeanDefinition mbd, final Object[] args)
+            throws BeanCreationException {
+
+        // Instantiate the bean.
+        BeanWrapper instanceWrapper = null;
+        if (mbd.isSingleton()) {
+            instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+        }
+        if (instanceWrapper == null) {
+            //实例化bean，尚未初始化
+            instanceWrapper = createBeanInstance(beanName, mbd, args);
+        }
+        final Object bean = (instanceWrapper != null ? instanceWrapper.getWrappedInstance() : null);
+        Class<?> beanType = (instanceWrapper != null ? instanceWrapper.getWrappedClass() : null);
+        mbd.resolvedTargetType = beanType;
+
+        ..... //省略
+
+        // Eagerly cache singletons to be able to resolve circular references
+        // even when triggered by lifecycle interfaces like BeanFactoryAware.
+      //判断是否可以提前暴露。判断条件 = 是否单例 && 是否允许(默认true) && 是否创建过程中
+        boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
+                isSingletonCurrentlyInCreation(beanName));
+        if (earlySingletonExposure) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Eagerly caching bean '" + beanName +
+                        "' to allow for resolving potential circular references");
+            }
+              //这里把尚未初始化的bean，包装成ObjectFactory对象传递给addSingletonFactory方法
+            addSingletonFactory(beanName, new ObjectFactory<Object>() {
+                @Override
+                public Object getObject() throws BeansException {
+                    return getEarlyBeanReference(beanName, mbd, bean);
+                }
+            });
+        }
+
+        // Initialize the bean instance.
+        Object exposedObject = bean;
+        try {
+            //注入属性
+            populateBean(beanName, mbd, instanceWrapper);
+            if (exposedObject != null) {
+                //调用初始化方法，初始化bean
+                exposedObject = initializeBean(beanName, exposedObject, mbd);
+            }
+        }
+        ...//省略
+```
+
+我们看下解决循环依赖的核心方法addSingletonFactory，如下：
+
+
+
+```kotlin
+protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
+        Assert.notNull(singletonFactory, "Singleton factory must not be null");
+        synchronized (this.singletonObjects) {
+        //bean已经被其他线程初始化完成放到一级缓存了，这里也没必要放到三级缓存
+            if (!this.singletonObjects.containsKey(beanName)) {
+                //放到三级缓存，然后删除二级缓存(以防有值)
+                this.singletonFactories.put(beanName, singletonFactory);
+                this.earlySingletonObjects.remove(beanName);
+                this.registeredSingletons.add(beanName);
+            }
+        }
+    }
+```
+
+可以看到，这里仅仅是把提前暴露的bean封装成的ObjectFactory，放到三级缓存中。
+
+是不是还是不明白为啥需要三级缓存？我们看下上面添加的匿名内部类ObjectFactory的实现。
+
+
+
+```java
+  new ObjectFactory<Object>() {
+        @Override
+        public Object getObject() throws BeansException {
+                return getEarlyBeanReference(beanName, mbd, bean);
+           }
+     }
+```
+
+答案就在getEarlyBeanReference方法里面，如下：
+
+
+
+```tsx
+protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+        Object exposedObject = bean;
+        if (bean != null && !mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+    //对于有SmartInstantiationAwareBeanPostProcessor，特殊处理
+            for (BeanPostProcessor bp : getBeanPostProcessors()) {
+                if (bp instanceof SmartInstantiationAwareBeanPostProcessor) {
+                    SmartInstantiationAwareBeanPostProcessor ibp = (SmartInstantiationAwareBeanPostProcessor) bp;
+                    exposedObject = ibp.getEarlyBeanReference(exposedObject, beanName);
+                    if (exposedObject == null) {
+                        return null;
+                    }
+                }
+            }
+        }
+        return exposedObject;
+    }
+```
+
+这个地方专门用来特殊处理SmartInstantiationAwareBeanPostProcessor接口，说明getEarlyBeanReference也是一个拓展点，作用在这里的生命周期。getEarlyBeanReference的实现到底是啥呢？我们找个最常见的实现类，AbstractAutoProxyCreator。看下它的方法：
+
+
+
+```tsx
+@Override
+    public Object getEarlyBeanReference(Object bean, String beanName) throws BeansException {
+        Object cacheKey = getCacheKey(bean.getClass(), beanName);
+        if (!this.earlyProxyReferences.contains(cacheKey)) {
+            this.earlyProxyReferences.add(cacheKey);
+        }
+        return wrapIfNecessary(bean, beanName, cacheKey);
+    }
+```
+
+很神奇的地方，我们在看下AbstractAutoProxyCreator.postProcessAfterInitialization方法：
+
+
+
+```tsx
+@Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+        if (bean != null) {
+            Object cacheKey = getCacheKey(bean.getClass(), beanName);
+            if (!this.earlyProxyReferences.contains(cacheKey)) {
+                return wrapIfNecessary(bean, beanName, cacheKey);
+            }
+        }
+        return bean;
+    }
+```
+
+getEarlyBeanReference和postProcessAfterInitialization，何其相似啊！！！
+ postProcessAfterInitialization我们知道，它只会在bean的所有初始化方法完成后，调用aop生成代理类。但是getEarlyBeanReference竟然对**尚未初始化完成的bean**，提前进行了aop代理。**Why？不用初始化完成，就能代理吗？**
+
+一直想不通，最后终于想通了。既然尚未初始化完成的bean都可以提前注入到其他bean里面，为啥就不能提前AOP呢？我们用的是bean的引用，只要这个引用不变，至于引用所指向的对象啥时候初始化完，其实无所谓。其他bean也只是持有的是这个bean的引用，同理AOP代理也是仅仅持有target bean的引用。所以，所有使用到bean的地方，只要实例化完成生成了引用地址，只要这个地址不变，就可以把这个bean当做成熟的bean使用。等整个容器启动完成，这些bean自然而然的就初始化好了，所有引用这个bean的Bean也自然而然的就可以使用了。
+
+![img](https:////upload-images.jianshu.io/upload_images/19332902-04e40db8a62156bc.png?imageMogr2/auto-orient/strip|imageView2/2/w/750/format/webp)
+
+image.png
+
+到这里大家应该清楚了，为啥需要三级缓存了吧。如果你依赖的对象是AOP代理，那么就需要用到第三级缓存暂存ObjectFactory。
+
+你可能又会问，为啥这里不直接把getEarlyBeanReference生成的对象，放到二级缓存里面呢？这样不也节省了三级缓存嘛？为啥非要在getBean.getSingleton里面去调用getObject呢?
+
+这个问题问得好，其实我也觉得可以。我目前也没答案，可能spring基于效率的考虑吧。
+
+个人理解：
+ 1、其实把getEarlyBeanReference生成的对象直接保存到二级缓存，无需三级缓存用ObjectFacotry封装原始bean也可以解决循环依赖。三级缓存感觉纯粹是为了延迟调用aop逻辑而已。
+ 2、其实把getEarlyBeanReference生成的对象直接暴露到一级缓存也是可以的。只要引用的地址不变，谁要用就提前给谁。初始化动作可以后面慢慢做。只要引用不变，它初始化完成后，所有引用它的bean都自然而然的能得到完成的该bean。可能spring担心一级缓存既用来存放单例bean，又用来存放提前暴露的bean，会引起混乱。所以，上面徐庶老师说的，只要胆子大，一级缓存够用。解决循环依赖的核心，不在乎几级缓存，而在于提前暴露引用地址即可。
