@@ -680,7 +680,7 @@ registerBeanPostProcessors
 private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
 
 /** Cache of singleton factories: bean name to ObjectFactory. */
-// 存储还没初始化完成的bean, 主要用于处理依赖循环中的AOP
+// 提前暴露对象引用, 主要用于处理依赖循环中的AOP. 确保暴露的早期引用是代理对象
 private final Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
 
 /** Cache of early singleton objects: bean name to bean instance. */
@@ -1077,3 +1077,21 @@ image.png
 个人理解：
  1、其实把getEarlyBeanReference生成的对象直接保存到二级缓存，无需三级缓存用ObjectFacotry封装原始bean也可以解决循环依赖。三级缓存感觉纯粹是为了延迟调用aop逻辑而已。
  2、其实把getEarlyBeanReference生成的对象直接暴露到一级缓存也是可以的。只要引用的地址不变，谁要用就提前给谁。初始化动作可以后面慢慢做。只要引用不变，它初始化完成后，所有引用它的bean都自然而然的能得到完成的该bean。可能spring担心一级缓存既用来存放单例bean，又用来存放提前暴露的bean，会引起混乱。所以，上面徐庶老师说的，只要胆子大，一级缓存够用。解决循环依赖的核心，不在乎几级缓存，而在于提前暴露引用地址即可。
+
+### Advice与Advisor
+
+[Advice与Advisor参考文章](https://www.cnblogs.com/zhangzongle/p/5944906.html)
+
+通知Advice是Spring提供的一种切面(Aspect)。但其功能过于简单，只能将切面织入到目标类的所有目标方法中，无法完成将切面织入到指定目标方法中。
+
+顾问Advisor是Spring提供的另一种切面。其可以完成更为复杂的切面织入功能。PointcutAdvisor是顾问的一种，可以指定具体的切入点。顾问将通知进行了包装，会根据不同的通知类型，在不同的时间点，将切面织入到不同的切入点。
+
+### Spring AOP 主要接口
+
+* AbstractAutoProxyCreator
+
+    * ![AbstractAutoProxyCreator](Spring源码.assets/AbstractAutoProxyCreator.png)
+    * InstantiationAwareBeanPostProcessor接口扩展了BeanPostProcessor, 普通的BeanPostProcessor只能在bea对象执行init前后运行, InstantiationAwareBeanPostProcessor提供了postProcessProperties与postProcessPropertyValues可以实现特出的代理如TargetSource和额外的字段注入策略
+    * SmartInstantiationAwareBeanPostProcessor扩展了InstantiationAwareBeanPostProcessor, 提供了predictBeanType预测bean的最终类型(代理后的类型), 同时提供getEarlyBeanReference方法用于返回早期对象引用, 用于处理循环引用. SingeltonFactories存储的ObjectFactory实现就是调用了SmartInstantiationAwareBeanPostProcessor的getEarlyBeanReference. SingeltonFactories主要用于有循环依赖的AOP. 提前暴露的应该是代理对象引用.
+
+    
