@@ -4,6 +4,7 @@
 
 ```xml
 <properties>
+    <!-- 注意高版本依赖可能出现问题 -->
     <swagger.version>2.10.5</swagger.version>
 </properties>
 
