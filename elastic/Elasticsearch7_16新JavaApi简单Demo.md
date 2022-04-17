@@ -126,3 +126,44 @@ productService.saveBatch(
         );
 */
 ```
+
+## Sniffer新版api配置
+
+```java
+@SpringBootTest
+class EsSpringbootDemoApplicationTests {
+
+    @Autowired
+    ProductService productService;
+
+    static final ElasticsearchClient client;
+
+    static final Sniffer sniffer;
+
+    static {
+        // 失败后触发sniffer的监听器
+        final SniffOnFailureListener sniffOnFailureListener = new SniffOnFailureListener();
+        final RestClient restClient = RestClient.builder(HttpHost.create("localhost:9200"))
+                .setFailureListener(sniffOnFailureListener)
+                .build();
+
+        sniffer = Sniffer.builder(restClient)
+                .setSniffIntervalMillis(5000) // 每间隔5s sniffer一次
+                .setSniffAfterFailureDelayMillis(30000) // 失败后延迟30s sniffer
+                .build();
+
+        sniffOnFailureListener.setSniffer(sniffer);
+
+        client = new ElasticsearchClient(new RestClientTransport(
+                restClient,
+                new JacksonJsonpMapper()
+        ));
+    }
+
+    @Test
+    @SneakyThrows
+    void contextLoads() {
+        System.out.println(client);
+    }
+}
+```
