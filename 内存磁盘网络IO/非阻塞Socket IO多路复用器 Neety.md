@@ -196,16 +196,20 @@ public class SocketNIO {
         - 同样使用轮询, 线性查找, 效率低
         - 水平触发, 收到了fd消息后, 若没有被处理, 下次还会报告该fd
 5. select 和 poll 只触发了一次系统调用, 由内核来完成遍历
-6. epoll, 使用时间处理模型, 不同于轮询, 只会通知发生了IO事件的fd, 实际上是事件驱动的, 相当于复杂度降到了O(1)
+6. epoll, 使用事件处理模型, 不同于轮询, 只会通知发生了IO事件的fd, 实际上是事件驱动的, 相当于复杂度降到了O(1)
     - 优点
         - epoll 并发限制, 连接数与内存大小有关
         - 不需要轮询, 只需要处理触发事件的fd, 通过回调函数处理
         - 有两种触发模式
             - EPOLLLT
-                - 默认模式, 只要fd还有数据可以读, 每次epoll_wait, 都会返回fd的读取事件, 提醒用户去操作
+                - 默认模式, 水平触发模式, 只要epoll实例中有就绪的fd, 每次epoll_wait, 都会返回就绪fd，哪怕就绪的fd上没有发生新的IO事件
             - EPOLLET
-                - 边缘触发模式, 只会提示一次, 直到再有数据流入之前都不会再提示, 无论fd中是否还有数据可读, 一次把buffer读光
-                - 如果系统中有我们不关心的fd, 每次epoll_wait都触发, 大幅降低检索fd的性能, 当被监控的fd上发生IO事件时, 再去通知程序读写, 系统中不会充满我们不关心的就绪fd
+                - 边缘触发模式, 只会提示一次, 直到再有数据流入之前都不会再提示. 
+                - 由于只提醒一次，所以使用时无论fd中是否还有数据可读，一次把buffer读光更好，不然容易出现问题。
+                - 使用select与poll, 只要有就绪的fd, 每次epoll_wait都会获取所有就绪fd, 大幅降低检索fd的性能. 而epoll尽当被监控的fd上发生新的IO事件时, 才去通知, 系统中不会充满我们不关心的就绪fd
+            - EPOLLONESHOT
+              - 该模式保证fd的IO事件只会被处理一次，也就是epoll_wait获取一次，如果想要继续监听其IO事件，需要再次调用epoll_ctl注册
+              - 边缘模式虽然性能更高，但是我们需要一次性读取完数据不然可能出现死等待后超时，并且在多个线程(或进程，下同)处理同一个fd的多个事件时，一个线程监听到IO事件正在处理数据，此时又有新的IO事件被另一个线程处理，这是我们不希望出现的竟态条件。此时就可以使用EPOLLONESHOT，保证socket在任意时刻只被一个线程处理，如果想要继续处理，在处理结束时再次通过epoll_ctl注册即可。
         - epoll 只会关心活跃的连接和连接数无关, 提升检索连接性能, 性能远高于select poll
         - IO使用mmap
             - 跨过了页缓存, 减少数据从用户态到内核态的拷贝次数, 提高文件读写效率
@@ -689,3 +693,497 @@ public class SocketMultiplexingSingleThread_2 {
 }
 ```
 
+## linux epol系列函数讲解
+1. 调用epoll_create创建epoll实例
+2. 将需要处理IO事件的fd利用epoll_ctl注册到epoll实例上
+3. 通过epoll_wait函数获取IO事件并进行处理
+### 利用epoll读取stdin
+```c
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+
+const int MAX_EP_EVENTS = 10;
+const int BUF_SIZE = 1024;
+
+int main(int argc, const char **argv) {
+  int fd;
+  if ((fd = open("/dev/stdin", O_RDONLY)) == -1) {
+    fprintf(stderr, "open /dev/stdin error: %s\n", strerror(errno));
+    return 1;
+  }
+  // 创建epoll实例
+  int epfd = epoll_create1(EPOLL_CLOEXEC);
+
+  // 创建需要注册到epoll实例上的事件
+  struct epoll_event ev;
+  // 设置监听的fd
+  ev.data.fd = fd;
+  /*
+    设置监听的事件类型, EPOLLIN表示读取时间, EPOLLPRI表示重要的读取事件,
+    详细可以查询带外数据
+    (传输层提供的一种可以紧急处理数据的方式，各种协议的处理都不一样)
+    EPOLLET表示边缘触发，即只有当fd上的IO有新的输入输出时才会返回，否则之前哪怕数据没有读取完成也不会返回
+    如果不设置EVENT为EPOLLET默认是EPOLLLT水平出发，只要有就绪的fd就返回，哪怕fd上面没有任何IO
+  */
+  // ev.events = EPOLLIN | EPOLLPRI;
+  ev.events = EPOLLIN | EPOLLPRI | EPOLLET;
+  // 将时间注册到epoll实例上
+  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+
+  // 创建用于接收epoll事件的数组
+  struct epoll_event ep_events[MAX_EP_EVENTS];
+
+  char buf[BUF_SIZE];
+
+  while (1) {
+    printf("----------\n");
+    // 等待IO时间
+    int ready = epoll_wait(epfd, ep_events, MAX_EP_EVENTS, 5000);
+    // -1 表示错误
+    if (ready == -1) {
+      fprintf(stderr, "epoll_wait error: %s\n", strerror(errno));
+      return 1;
+    }
+    // ready为0表示没有就绪的文件描述符(即没有任何IO时间)
+    if (ready == 0) {
+      printf("epoll_wait timeout\n");
+    }
+    printf("ready: %d\n", ready);
+    for (int i = 0; i < ready; i++) {
+      // 处理读取事件
+      if (ep_events[i].events & EPOLLIN) {
+        // 初始化buf
+        memset(buf, 0, BUF_SIZE);
+        int read_cnt = read(ep_events[i].data.fd, buf, BUF_SIZE);
+        if (read_cnt == -1) {
+          fprintf(stderr, "read_cnt error: %s", strerror(errno));
+        } else if (read_cnt > 0) {
+          // 输出读取到buf中的数据
+          buf[read_cnt] = '\0';
+          printf("%s", buf);
+        } else if (read_cnt == 0) {
+          close(ep_events[i].data.fd);
+          ep_events[i].events = 0;
+        }
+      }
+    }
+  }
+
+  return 0;
+}
+```
+
+### 利用epoll处理tcp流
+```c
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#define bool char
+#define true 1
+#define false 0
+
+const int MAX_EP_EVENT = 1024;
+const int BUFFER_SIZE = 1024;
+static int listen_fd;
+
+/**
+ * @brief 将给定fd设置为非阻塞
+ *
+ * @param fd fd
+ * @return int 之前的fl options设置
+ */
+int setnonblocking(int fd) {
+  int old_ops = fcntl(fd, F_GETFL);
+  fcntl(fd, F_SETFL, old_ops | O_NONBLOCK);
+  return old_ops;
+}
+
+/**
+ * @brief 注册fd事件
+ *
+ * @param epfd epoll实例fd
+ * @param fd 被注册的fd
+ * @param enable_et 是否开启et边缘触发
+ */
+void register_fd(int epfd, int fd, bool enable_et) {
+  setnonblocking(fd);
+  struct epoll_event ev;
+  bzero(&ev, sizeof(ev));
+  ev.data.fd = fd;
+  ev.events = EPOLLIN | EPOLLPRI;
+  if (enable_et) {
+    ev.events |= EPOLLET;
+  }
+  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+void et_process(struct epoll_event* ep_events, int ready_num, int epfd,
+                int listen_fd) {
+  char buf[BUFFER_SIZE];
+  for (int i = 0; i < ready_num; i++) {
+    int sockfd = ep_events[i].data.fd;
+    // 特殊处理server fd
+    if (sockfd == listen_fd) {
+      // struct sockaddr client_addr;
+      struct sockaddr_in client_addr;
+      socklen_t client_socklen = sizeof(client_addr);
+      int conn_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &client_socklen);
+      register_fd(epfd, conn_fd, true);
+    } else if (ep_events[i].events & EPOLLIN) {
+      // 处理读取事件
+      // 边缘触发，由于其机制我们需要巨额宝一次性读取完，当前流中的数据，不然可能出现死等待后超时
+      printf("et process EPOLLIN\n");
+      while (true) {
+        memset(buf, '\0', BUFFER_SIZE);
+        int read_cnt = recv(sockfd, buf, BUFFER_SIZE - 1, 0);
+        if (read_cnt == -1) {
+          // 这里体现了边缘触发与水平触发处理上的区别
+          /*
+            在边缘触发模式下，如果错误类型是EAGAIN或者EWOULDBLOCK
+            那么表示数据已经全部读取完毕，之后epoll_wait可以再次监听到当前sockfd上的EPOLLIN事件
+            所以这是不做关闭操作的
+          */
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            printf("read later\n");
+            break;
+          }
+          fprintf(stderr, "recv error: %s\n", strerror(errno));
+          close(sockfd);
+          break;
+        } else if (read_cnt == 0) {
+          close(sockfd);
+          break;
+        } else {
+          printf("get %d bytes from buf, content: %s\n", read_cnt, buf);
+        }
+      }
+    }
+  }
+}
+
+void lt_process(struct epoll_event* ep_events, int ready_num, int epfd,
+                int listen_fd) {
+  char buf[BUFFER_SIZE];
+  for (int i = 0; i < ready_num; i++) {
+    int sockfd = ep_events[i].data.fd;
+    // 对tcp流的fd即server的fd特殊处理
+    if (sockfd == listen_fd) {
+      struct sockaddr client_addr;
+      socklen_t client_socklen = sizeof(client_addr);
+      int conn_fd = accept(listen_fd, &client_addr, &client_socklen);
+      register_fd(epfd, conn_fd, false);
+    } else if (ep_events[i].events & EPOLLIN) {
+      // 处理读取事件
+      memset(buf, '\0', BUFFER_SIZE);
+      int read_cnt = recv(sockfd, buf, BUFFER_SIZE - 1, 0);
+      if (read_cnt <= 0) {  // 异常与流关闭
+        // 返回-1表示异常，返回0表示没有数据需要读取了请关闭流。
+        if (read_cnt == -1) {
+          fprintf(stderr, "recv error: %s\n", strerror(errno));
+        }
+        close(sockfd);
+        printf("closed sockfd\n");
+        continue;
+      } else {
+        printf("get %d bytes from buf, content: %s\n", read_cnt, buf);
+      }
+    }
+  }
+}
+
+void sigint_handler(int sig) {
+  printf("sig: %d, listen_fd: %d, sigint handler run...\n", sig, listen_fd);
+  close(listen_fd);
+}
+
+int main(int argc, char** argv) {
+  /*if (argc <= 2) {
+    fprintf(stderr, "usage: %s ip_address port_number\n", basename(argv[0]));
+  }*/
+
+  /*const char* ip = argv[1];
+  int port = atoi(argv[2]);*/
+  const char* ip = "localhost";
+  int port = 8080;
+  struct sockaddr_in addr;
+  // 初始化socket addr对象
+  memset(&addr, 0, sizeof(addr));
+  // 设置ipv4通信
+  addr.sin_family = AF_INET;
+  // 将`ip`10进制字符串以ipv4方式格式化称二进制数据，存入addr对象的sin_addr中
+  inet_pton(AF_INET, ip, &addr.sin_addr);
+  // 网路通信中使用的是大端, htons可以加个port转换为网络传输中需要的大端
+  addr.sin_port = htons(port);
+
+  // 创建tcp流
+  /*
+    posix系统规范规定设置地址时使用AF_INET，创建套接字时使用PF_INET
+    AF_INET与PF_INET都表示ipv4，在大多数系统中他们的值都会一样的
+    SOCK_STREAM表示tcp协议
+  */
+  listen_fd = socket(PF_INET, SOCK_STREAM, 0);
+  int on = 1;
+  if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+    fprintf(stderr, "setsockopt error: %s\n", strerror(errno));
+    return 1;
+  }
+  if (listen_fd == -1) {
+    fprintf(stderr, "socket create error: %s\n", strerror(errno));
+    return 1;
+  }
+  // 绑定监听地址
+  int status = bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
+  if (status == -1) {
+    fprintf(stderr, "bind error: %s\n", strerror(errno));
+    return 1;
+  }
+  // 开始监听，1024参数表示最大可以接受的连接数量，后续连接会被拒绝
+  status = listen(listen_fd, 1024);
+  if (status == -1) {
+    fprintf(stderr, "listen error: %s\n", strerror(errno));
+    return 1;
+  }
+
+  int epfd = epoll_create1(EPOLL_CLOEXEC);
+#ifdef EPOLLET_ENABLED
+  register_fd(epfd, listen_fd, true);
+#else
+  register_fd(epfd, listen_fd, false);
+#endif
+
+  struct epoll_event ep_evnets[MAX_EP_EVENT];
+
+  // 注册SIGINT信号处理器, 在ctrl c终止信号后关闭IO流
+  signal(SIGINT, sigint_handler);
+
+  while (true) {
+    int ready = epoll_wait(epfd, ep_evnets, MAX_EP_EVENT, -1);
+    if (ready == -1) {
+      fprintf(stderr, "epoll_wait error: %s\n", strerror(errno));
+      return 1;
+    }
+
+#ifdef EPOLLET_ENABLED
+    et_process(ep_evnets, ready, epfd, listen_fd);
+#else
+    lt_process(ep_evnets, ready, epfd, listen_fd);
+#endif
+  }
+  // 关闭tcp流
+  close(listen_fd);
+  return 0;
+}
+```
+
+### epoll多线程处理tcp流 
+```c
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#define bool char
+#define true 1
+#define false 0
+
+const int MAX_EP_EVENT = 1024;
+const int BUFFER_SIZE = 1024;
+static int listen_fd;
+
+struct woker_process_param {
+  int epfd;
+  int sockfd;
+};
+
+void woker_process(void* arg) {
+  struct woker_process_param* param = (struct woker_process_param*)arg;
+  int epfd = param->epfd;
+  int sockfd = param->sockfd;
+  char buf[BUFFER_SIZE];
+  memset(buf, '\0', BUFFER_SIZE);
+  while (true) {
+    int read_cnt = recv(sockfd, buf, BUFFER_SIZE - 1, 0);
+    if (read_cnt == -1) {
+      // EAGAIN与EWOULDBLOCK的值是一样，事实上只判断其中一个就足够了
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        reset_oneshot(epfd, sockfd);
+        printf("read later\n");
+        break;
+      }
+    } else if (read_cnt == 0) {
+      close(sockfd);
+      printf("close sockfd: %d\n", sockfd);
+      break;
+    } else {
+      printf("get %d bytes from buf, content: %s\n", read_cnt, buf);
+      sleep(5);  // 模拟处理时间，一遍观察多线程下的处理效果
+    }
+  }
+  printf("end of thread woker processing data on sockfd: %d\b", sockfd);
+}
+
+/**
+ * @brief 将给定fd设置为非阻塞
+ *
+ * @param fd fd
+ * @return int 之前的fl options设置
+ */
+int setnonblocking(int fd) {
+  int old_ops = fcntl(fd, F_GETFL);
+  fcntl(fd, F_SETFL, old_ops | O_NONBLOCK);
+  return old_ops;
+}
+
+/**
+ * @brief 注册fd事件
+ *
+ * @param epfd epoll实例fd
+ * @param fd 被注册的fd
+ * @param enable_oneshot
+ * 是否开启EPOLLONESHOT，开启后每次只能处理一个IO事件，新的IO事件发生时需要再次epoll_ctl注册才能处理
+ */
+void register_fd(int epfd, int fd, bool enable_oneshot) {
+  setnonblocking(fd);
+  struct epoll_event ev;
+  bzero(&ev, sizeof(ev));
+  ev.data.fd = fd;
+  // 默认ET边缘触发
+  ev.events = EPOLLIN | EPOLLPRI | EPOLLET;
+  if (enable_oneshot) {
+    ev.events |= EPOLLONESHOT;
+  }
+  epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+/**
+ * @brief 将fd重置为EPOLLONESHOT，以便继续处理fd的IO事件
+ * 
+ * @param epfd 
+ * @param fd 
+ */
+void reset_oneshot(int epfd, int fd) {
+  struct epoll_event ev;
+  ev.data.fd = fd;
+  ev.events = EPOLLIN | EPOLLPRI | EPOLLONESHOT;
+  // 注意这里使用的是EPOLL_CTL_MOD，之前已经添加过了这里只需要更改即可
+  epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+void sigint_handler(int sig) {
+  printf("sig: %d, listen_fd: %d, sigint handler run...\n", sig, listen_fd);
+  close(listen_fd);
+}
+
+int main(int argc, char** argv) {
+  /*if (argc <= 2) {
+    fprintf(stderr, "usage: %s ip_address port_number\n", basename(argv[0]));
+  }*/
+
+  /*const char* ip = argv[1];
+  int port = atoi(argv[2]);*/
+  const char* ip = "localhost";
+  int port = 8080;
+  struct sockaddr_in addr;
+  // 初始化socket addr对象
+  memset(&addr, 0, sizeof(addr));
+  // 设置ipv4通信
+  addr.sin_family = AF_INET;
+  // 将`ip`10进制字符串以ipv4方式格式化称二进制数据，存入addr对象的sin_addr中
+  inet_pton(AF_INET, ip, &addr.sin_addr);
+  // 网路通信中使用的是大端, htons可以加个port转换为网络传输中需要的大端
+  addr.sin_port = htons(port);
+
+  // 创建tcp流
+  /*
+    posix系统规范规定设置地址时使用AF_INET，创建套接字时使用PF_INET
+    AF_INET与PF_INET都表示ipv4，在大多数系统中他们的值都会一样的
+    SOCK_STREAM表示tcp协议
+  */
+  listen_fd = socket(PF_INET, SOCK_STREAM, 0);
+  int on = 1;
+  if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+    fprintf(stderr, "setsockopt error: %s\n", strerror(errno));
+    return 1;
+  }
+  if (listen_fd == -1) {
+    fprintf(stderr, "socket create error: %s\n", strerror(errno));
+    return 1;
+  }
+  // 绑定监听地址
+  int status = bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
+  if (status == -1) {
+    fprintf(stderr, "bind error: %s\n", strerror(errno));
+    return 1;
+  }
+  // 开始监听，1024参数表示最大可以接受的连接数量，后续连接会被拒绝
+  status = listen(listen_fd, 1024);
+  if (status == -1) {
+    fprintf(stderr, "listen error: %s\n", strerror(errno));
+    return 1;
+  }
+
+  int epfd = epoll_create1(EPOLL_CLOEXEC);
+  // 注册server fd, 且不适用EPOLLONESHOT, server fd我们需要长期监听
+  register_fd(epfd, listen_fd, false);
+
+  struct epoll_event ep_evnets[MAX_EP_EVENT];
+
+  // 注册SIGINT信号处理器, 在ctrl c终止信号后关闭IO流
+  signal(SIGINT, sigint_handler);
+
+  while (true) {
+    int ready = epoll_wait(epfd, ep_evnets, MAX_EP_EVENT, -1);
+    if (ready == -1) {
+      fprintf(stderr, "epoll_wait error: %s\n", strerror(errno));
+      return 1;
+    }
+
+    for (int i = 0; i < ready; i++) {
+      int sockfd = ep_evnets[i].data.fd;
+      if (sockfd == listen_fd) {
+        struct sockaddr client_addr;
+        socklen_t client_socklen = sizeof(client_addr);
+        int conn_fd = accept(listen_fd, &client_addr, &client_socklen);
+        register_fd(epfd, conn_fd, true);
+      } else if (ep_evnets[i].events & EPOLLIN) {
+        // 开辟新线程处理读取事件
+        pthread_t thread;
+        struct woker_process_param param;
+        param.epfd = epfd;
+        param.sockfd = sockfd;
+        pthread_create(&thread, NULL, (void* (*)(void*))woker_process,
+                       (void*)&param);
+      }
+    }
+  }
+  // 关闭tcp流
+  close(listen_fd);
+  return 0;
+}
+```
