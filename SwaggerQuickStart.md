@@ -40,7 +40,29 @@ public class SwaggerConfig {
                 .apis(RequestHandlerSelectors.basePackage("com.demo.temactivitiesboot.controller"))
 //                .apis(RequestHandlerSelectors.withClassAnnotation(Api.class))
                 .paths(PathSelectors.any())
+                .build()
+	            // 开启全站认证
+                // .securityContexts(List.of(securityContext()))
+                // 配置下面这个，只有在@APIOperation(authorizations = @Authorization("Token"))才会校验
+                // ApiKey的name需与SecurityReference的reference保持一致
+                .securitySchemes(List.of(
+                        new ApiKey("Token", "Token", "header")
+                ));;
+    }
+    
+    private SecurityContext securityContext() {
+        return SecurityContext.builder()
+                .securityReferences(defaultAuth())
                 .build();
+    }
+
+    private List<SecurityReference> defaultAuth() {
+        AuthorizationScope authorizationScope
+                = new AuthorizationScope("global", "accessEverything");
+        AuthorizationScope[] authorizationScopes = {authorizationScope};
+        return Collections.singletonList(
+                new SecurityReference("Token", authorizationScopes)
+        );
     }
 
     public ApiInfo apiInfo() {
