@@ -329,3 +329,138 @@ public class RabbitMqConfig {
     }
 }
 ```
+
+### TTL队列
+
+rabbitmq的队列提供了消息过期机制，指定`x-message-ttl`来设置过期时间。
+
+过期的消息被丢弃，可以指定`x-dead-letter-exchange`与`x-dead-letter-routing-key`将详细路由到指定死信队列。
+
+下面是一个模拟订单下单场景，用户下单后发送消息给订单队列，消费者消费订单队列里的数据，如果支付成功成功消费消息，没有支付就拒绝消息并将消息重投，继续消费。当订单过期后，由订单死信队列消费来解锁订单。
+
+```java
+// 用@Bean将队列、交换机、绑定关系注入容器，让有组件需要监听相关队列的时候会自动创建（懒加载）
+@Configuration
+public class RabbitMqOrderConfig {
+
+    /**
+     * 绑定订单过期的死信队列交换机与订单过期死信队列
+     */
+    @Bean
+    public Binding orderExchangeDeadBinding() {
+        return BindingBuilder.bind(orderDeadQueue())
+                .to(orderExchangeDead())
+                .with("order.dead")
+                .noargs();
+    }
+
+    @Bean
+    public Binding orderExchangeBinding() {
+        return BindingBuilder.bind(orderQueue())
+                .to(orderExchange())
+                .with("order")
+                .noargs();
+    }
+
+    /**
+     * 订单交换机
+     */
+    @Bean
+    public Exchange orderExchange() {
+        return new TopicExchange("gulimall.order.exchange", true, false);
+    }
+
+    /**
+     * 订单过期的死信队列交换机
+     */
+    @Bean
+    public Exchange orderExchangeDead() {
+        return new TopicExchange("gulimall.order.exchange.dead", true, false);
+    }
+
+    /**
+     * 订单队列，带有消息过期时间
+     * 消息过期后会交给订单死信队列，自动解除订单
+     */
+    @Bean
+    public Queue orderQueue() {
+        return new Queue("gulimall.order.queue", true, false, false,
+                new HashMap<>() {{
+                    // 设置消息过期时间
+                    // put("x-message-ttl", Duration.of(30, ChronoUnit.MINUTES).toMillis());
+                    put("x-message-ttl", Duration.of(1, ChronoUnit.MINUTES).toMillis());
+                    // 消息过期后不会删除，交由死信队列交换机路由给死信队列
+                    put("x-dead-letter-exchange", "gulimall.order.exchange.dead");
+                    // 死信消息发送给死信交换机的路由键
+                    put("x-dead-letter-routing-key", "order.dead");
+                }});
+    }
+
+    /**
+     * 订单过期的死信队列
+     */
+    @Bean
+    public Queue orderDeadQueue() {
+        return new Queue("gulimall.order.dead.queue", true, false, false);
+    }
+}
+```
+
+```java
+@Component
+@RabbitListener(queues = "gulimall.order.dead.queue")
+@Slf4j
+public class OrderDeadQueueConsumer {
+
+    /**
+     * 消费过期订单的死信队列中的数据
+     * @param orderId 订单id
+     * @param message mq消息对象
+     * @param channel mq管道对象
+     */
+    @RabbitHandler
+    public void orderDeadHandle(Integer orderId, Message message, Channel channel) {
+        final long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        try {
+            channel.basicAck(deliveryTag, false);
+            log.info("{}号订单过期，已解锁订单", orderId);
+        } catch (IOException e) {
+            log.error(String.format("%d号订单过期，解锁订单出错", orderId), e);
+        }
+    }
+}
+```
+
+```java
+@Component
+@RabbitListener(queues = "gulimall.order.queue")
+@Slf4j
+public class OrderConsumer {
+
+    /**
+     * 消费支付成功的订单
+     * @param orderId 订单id
+     * @param message mq消息对象
+     * @param channel mq管道对象
+     */
+    @RabbitHandler
+    public void orderHandler(Integer orderId, Message message, Channel channel) {
+        // 模拟订单支付成功，订单id > 10表示订单已支付，方便演示订单过期后被死信交换机处理
+        final long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        if (orderId > 10) {
+            try {
+                channel.basicAck(deliveryTag, false);
+                log.info("{}号订单支付成功，已扣减库存", orderId);
+            } catch (IOException e) {
+                log.error(String.format("%d号的订单支付成功，扣减库存失败", orderId), e);
+            }
+        } else {
+            try {
+                channel.basicNack(deliveryTag, false, true);
+            } catch (IOException e) {
+                log.error(String.format("%d号的订单未支付，拒绝消费出错", orderId), e);
+            }
+        }
+    }
+}
+```
