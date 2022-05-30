@@ -902,6 +902,21 @@ public class NacosBlockHandler {
 
 > !!! 注意限流与降级方法参数必须对应上
 
+详细定义资源，注解、异步请参考`https://github.com/alibaba/Sentinel/wiki/如何使用#定义资源`
+
+> !!!踩坑记录：今天在使用@SentinelResource注解时，无法走自定义的异常返回方法，始终走的是sentinel自己定义的默认返回方法
+>
+> 原因 
+>
+> ```
+> @GetMapping(value="/test/test2")
+> @SentinelResource(value = "/test2", blockHandler = "test2BlockHandler")
+> ```
+>
+> 1.其中@SentinelResource的value值不要和@GetMapping的value值一样
+>
+> 2.配置sentinel的流控或者降级的资源名应和@SentinelResource的value值一样，而且不要再同时配置@GetMapping中value的资源名
+
 #### sentinel-dashboard
 
 去[Sentinel仓库](https://github.com/alibaba/Sentinel)下载sentinel-dashboard.jar包
