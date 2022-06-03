@@ -350,6 +350,14 @@ hadoop-3
 
 拷贝完成后使用工具，将`source /etc/profile`分发到所有服务器，刷新环境变量。
 
+#### 拷贝/etc/hosts
+
+`scp /etc/hosts root@hadoop-2:/etc/hosts`
+
+`scp /etc/hosts root@hadoop-3:/etc/hosts`
+
+拷贝完成后使用工具，将`service network restart`分发到所有服务器，重启网卡。
+
 ### 初始化NameNode
 
 在NameNode上（这个历史hadoop-1），执行`hadoop namenode -foramt`初始化。
@@ -365,3 +373,358 @@ hadoop-3
 脚本路径在hadoop目录下的sbin中
 
 start-all.sh启动yarn与hdfs
+
+### 启动MapReduce历史记录
+
+`mapred --daemon start historyserver`
+
+### 集群启动/停止方式总结
+
+* hdfs与yarn全部启动
+    * `start-all.sh` ``start-all.sh``
+* hdfs与yarn单独启动
+    * `start-dfs.sh` `stop-dfs.sh`
+    * `start-yarn.sh` `stop-yarn.sh`
+* 组件单独启动
+    * `hdfs --daemon start/stop namenode/datanode/secondarynamenode`
+    * `yarn --daemon start/stop resourcemanager/nodemanager`
+
+## hadoop常用端口号
+
+| Hadoop版本 | NameNode内部通信端口 | NameNode Web端口 | Yarn任务运行情况 | Mapreduce历史服务器端口 |
+| ---------- | -------------------- | ---------------- | ---------------- | ----------------------- |
+| hadoop3.x  | 8020/9000/9820       | 9870             | 8088             | 19888                   |
+| hadoop2.x  | 8020/9000            | 50070            | 8088             | 19888                   |
+
+## hadoop常用配置文件
+
+| Hadoop版本 | 配置文件                                                     |
+| ---------- | ------------------------------------------------------------ |
+| hadoop3.x  | core-site.xml、hdfs-site.xml、yarn-site.xml、mapred-site.xml、wokers |
+| hadoop2.x  | core-site.xml、hdfs-site.xml、yarn-site.xml、mapred-site.xml、slaves |
+
+## Hadoop Shell
+
+> hadoop控制台命令
+
+### copyFromLocal
+
+本地文件拷贝到hdfs
+
+`hadoop fs -copyFromLocal 本地文件 hdfs路径`
+
+### moveFromLocal
+
+本地文件移动到hdfs
+
+`hadoop fs -moveFromLocal 本地文件 hdfs路径`
+
+### put
+
+同copyFromLocal
+
+`hadoop fs -copyFromLocal 本地文件 hdfs路径`
+
+### appendToFile
+
+将本地文件追加到hdfs的文件中
+
+`hadoop fs -appendToFile 本地文件 hdfs路径`
+
+### copyToLocal
+
+将hdfs文件拷贝到本地，可拷贝文件夹
+
+`hadoop fs -copyToLocal hdfs路径 本地文件`
+
+### get
+
+同copyToLocal
+
+`hadoop fs -get hdfs路径 本地文件`
+
+### setrep
+
+设置hdfs的副本数量
+
+`hadoop fs -setrep 副本数量 hdfs路径`
+
+### 同linux用法的命令
+
+1. ls
+2. cat
+3. chgrp、chmod、chown
+4. mkdir
+5. mv
+6. cp
+7. tail
+8. rm
+9. du
+
+## JavaClient
+
+客户端使用hdfs依赖与hadoop/bin目录下的脚本
+
+在windwos上使用时，需要自己建立一个hadoop/bin目录将脚本拷贝到该目录下，并添加`HADOOP_HOME`与`HADOOP_HOME/bin`环境变量。
+
+windows还需要下载一个winutils，在https://github.com/steveloughran/winutils下载发行版，解压到windows上的hadoop/bin目录下。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>my.lcw.hadoop.javaclient</groupId>
+    <artifactId>hadoop_java_client</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-client -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <version>3.3.3</version>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.8.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.slf4j/slf4j-reload4j -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-reload4j</artifactId>
+            <version>1.7.36</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+如果需要看日志，在resource目录下配置log4j.properties
+
+```properties
+log4j.rootLogger=INFO, stdout
+log4j.appender.stdout=org.apache.log4j.ConsoleAppender
+log4j.appender.stdout.layout=org.apache.log4j.PatternLayout
+log4j.appender.stdout.layout.ConversionPattern=%d %p [%c] - %m%n
+log4j.appender.logfile=org.apache.log4j.FileAppender
+log4j.appender.logfile.File=target/spring.log
+log4j.appender.logfile.layout=org.apache.log4j.PatternLayout
+log4j.appender.logfile.layout.ConversionPattern=%d %p [%c] - %m%n
+```
+
+```java
+public class HdfsUtils {
+
+    public static void hadoopFsContext(Consumer<FileSystem> hadoopFsRunner) {
+        final URI uri = URI.create("hdfs://hadoop-1:9000");
+        final Configuration config = new Configuration();
+        /*
+        可以再resource目录下配置hdfs-site.xml等配置文件，更改客户端默认配置，也可以在代码里配置config。
+        优先级：代码配置 > 客户端resource目录下的配置 > hadoop服务器HADOOP_HOME/etc/hadoop下的配置 > hadoop默认配置
+         */
+        // config.set("dfs.replication", "1");
+        String userName = "root";
+        try (final FileSystem fs = FileSystem.get(uri, config, userName)) {
+            hadoopFsRunner.accept(fs);
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+```java
+public class HdfsClientTest {
+    @Test
+    public void testMkdir() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                System.out.println(fs.mkdirs(new Path("/xiyou/huaguoshan")));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testPut() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                // 第一个参数：是否删除源文件
+                // 第二个参数：是否覆盖，值为false时，如果文件已存在会报错
+                fs.copyFromLocalFile(false, true,
+                        new Path(".\\src\\test\\java\\my\\lcw\\hadoop\\javaclient\\sunwukong.txt"),
+                        new Path("/xiyou/huaguoshan"));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testGet() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                // 第一个参数：是否删除源文件
+                // 第二个参数：是否不使用crc文件校验，默认是false即开启校验
+                fs.copyToLocalFile(false,
+                        new Path("/xiyou/huaguoshan/"),
+                        new Path("./huaguoshan"),
+                        false);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testRm() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                // 第一个参数：要删除的路径
+                // 第二个参数：是否递归删除
+                fs.delete(new Path("/itheima/install.sh"), false);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testMv() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                // 更改文件名称同时支持移动文件
+                fs.rename(new Path("/itheima/wordcount2"), new Path("/wordcount"));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testLs() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            final RemoteIterator<LocatedFileStatus> it;
+            try {
+                it = fs.listFiles(new Path("/"), true);
+                while (it.hasNext()) {
+                    System.out.println("------------------------");
+                    final LocatedFileStatus fileStatus = it.next();
+                    System.out.println(fileStatus);
+                    System.out.println(Arrays.toString(fileStatus.getBlockLocations()));
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @Test
+    public void testFileStatus() {
+        HdfsUtils.hadoopFsContext(fs -> {
+            try {
+                final FileStatus[] fileStatuses = fs.listStatus(new Path("/"));
+                System.out.println(Arrays.toString(fileStatuses));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+}
+```
+
+## 面试题
+
+### 为什么块大小能设置太小也不能设置太大
+
+- 如果块太小，会导致文件被分成大量的块，极大增加寻址时间。
+- 如果块太大会影响磁盘传输时间
+- 块大小由存储介质的IO速度决定
+
+### HDFS写入流程
+
+![Hadoop上传流程](Hadoop.assets/Hadoop上传流程.png)
+
+1. hadoop会先向NameNode请求上传文件
+2. NameNode判断文件是否可以创建，这里会涉及权限检查、目录检查
+3. NameNode响应可以创建文件，客户端请求上传一个数据块
+4. NameNode选择节点，再有三个副本时，默认在当前机器上保存一份，然后其他机架保存一份，第三份副本保存第二份副本的另一个节点，这里还会考虑到负载均衡。
+5. NameNode选择完节点后，返回节点信息。
+6. 客户端获取节点信息，向一个节点（DataNode01）上传文件
+7. DataNode01不是阻塞上传，上传的过程中会将文件加载到数据中并行传输给其他节点
+
+### HDFS读取流程
+
+![Hadoop读取流程](Hadoop.assets/Hadoop读取流程.png)
+
+读取流程相比写入会简单一些
+
+1. 想NameNode请求下载文件
+2. NameNode判断是否可以读取，涉及权限判断、文件是否存在等
+3. 允许读取，返回元数据（存储在哪些节点上）
+4. 根据节点距离与负载均衡，选择最近且负载均衡的节点下载文件，文件分块存储在多个节点上就会与多个节点建立传输通道下载文件
+
+### NameNode工作机制
+
+首先思考NameNode将数据存储到哪里？
+
+| 存储方式                            | 优点                                   | 缺点     |
+| ----------------------------------- | -------------------------------------- | -------- |
+| 内存                                | 高性能                                 | 可靠性差 |
+| 硬盘                                | 可靠性高                               | 性能低   |
+| 硬盘 + 内存（通过特殊日志方式实现） | 兼顾性能与可靠性（类似Redis的RDB+AOF） | 更加复杂 |
+
+hdfs使用fsimage存储数据，使用edits存储追加操作，定时将edits文件中的操作，同步到fsimage中即可。
+
+服务器启动时会将fsimage与edits加载到内存中，服务器关闭时就会将edits同步到fsimage中，辅助节点会定时将edits同步到fsimage中。
+
+详细流程：
+
+1. 服务器启动将fsimage与edits加载到内存中
+2. 客户端进行crud
+3. 记录操作日志到edits中，当前的操作的文件一般以`edits_inprogress_001`方式命名。（有点类似于redis的aof）
+4. 辅助节点默认一个小时，将edits数据同步到fsimage。如果edits数据满了（默认记录达到100w次），也会触发同步操作。
+5. 当辅助节点请求合并，NameNode同意后，滚动正在写入的edits。`edits_inprogress_001`变成`edits_001`，并生成新的`edits_inprogress_002`，新的操作会记录在`edits_inprogress_002`中
+6. 辅助节点会拉取NameNode中的fsimage与edits，将NameNode与edits加载到内存
+7. 辅助节点合并edits与fsimage，生成新的`fsimage.checkpoint`
+8. 辅助节点将新的`fsimage.checkpoint`拷贝到NameNode，并重命名为fsimage
+
+
+
+Fsimage、Edits、seen_txid、VERSION等文件存储在数据目录中
+
+#### Fsimage
+
+> Fsimage是HDFS文件系统元数据信息的一个**永久性检查点**，包含HDFS文件系统的所有目录和文件inode的序列化信息
+
+Fsimage在NameNode与SecondaryNameNode都有可能有
+
+使用`hdfs oiv -p 文件类型 -i 镜像文件 -o 转换后输出文件名`将Fsimage转换成指定格式。
+
+`hdfs oiv -p XML -i fsimage_0000000000000001390 -o /root/fsimage.xml`生成XML
+
+#### Edits
+
+> Edits存放HDFS文件系统的所有的更新操作信息（类似Redis的AOF），HDFS文件系统的写入操作都会先存储在Edits中
+
+使用`hdfs oev -p 文件类型 -i 镜像文件 -o 转换后输出文件名`将edits转换成指定格式。
+
+### seen_txid
+
+> 该文件保存的是一个数字，值得是最后一个（即inprogress的edits）edits_的数字
+
+### VERSION
+
+> 记录了集群ID、创建时间、命名空间等
