@@ -659,6 +659,8 @@ public class HdfsClientTest {
 - 如果块太大会影响磁盘传输时间
 - 块大小由存储介质的IO速度决定
 
+一般中小型公司使用的都是128m，大公司才会使用256m
+
 ### HDFS写入流程
 
 ![Hadoop上传流程](Hadoop.assets/Hadoop上传流程.png)
@@ -666,10 +668,37 @@ public class HdfsClientTest {
 1. hadoop会先向NameNode请求上传文件
 2. NameNode判断文件是否可以创建，这里会涉及权限检查、目录检查
 3. NameNode响应可以创建文件，客户端请求上传一个数据块
-4. NameNode选择节点，再有三个副本时，默认在当前机器上保存一份，然后其他机架保存一份，第三份副本保存第二份副本的另一个节点，这里还会考虑到负载均衡。
+4. NameNode选择节点，在有三个副本时，默认在当前机器上保存一份，然后其他机架保存一份，第三份副本保存第二份副本的另一个节点，这里还会考虑到负载均衡。
 5. NameNode选择完节点后，返回节点信息。
 6. 客户端获取节点信息，向一个节点（DataNode01）上传文件
-7. DataNode01不是阻塞上传，上传的过程中会将文件加载到数据中并行传输给其他节点
+7. DataNode01不是阻塞上传，上传的过程中会将文件加载到数据中并行传输给其他节点，最后返回一次响应给上一个节点直到客户端
+
+#### 节点距离计算
+
+节点距离计算：两个几点在公共祖先的距离。
+
+* 互联网0
+    * 机房1（集群1）
+        * 机架1
+            * 节点1
+            * 节点2
+        * 机架2
+            * 节点1
+            * 节点2
+    * 机房2（集群2）
+        * 机架1
+            * 节点1
+            * 节点2
+            * 节点3
+        * 机架2
+            * 节点1
+            * 节点2
+
+节点0-1-1-1与节点0-1-1-2的距离为2， 两个人分别到同一个机架，然后再到对方。
+
+节点0-1-1-1与节点0-1-2-2的距离为4， 两个人分别到机架，再到同一个机房，再到另一个机架，再到对方节点。
+
+节点0-1-2-2与节点0-2-1-3
 
 ### HDFS读取流程
 
@@ -756,6 +785,61 @@ Fsimage在NameNode与SecondaryNameNode都有可能有
 <property>
 	<name>dfs.namenode.checkpoint.check.period</name>
     <value>60s</value>
+</property>
+```
+
+### DataNode工作机制
+
+1. DataNode启动后就会向NameNode注册，同时向NameNode上传数据块的元数据信息。
+2. DataNode默认莓果6h就会再想NameNode上报数据块的元数据信息
+3. 为了防止DataNode出现故障，影响可用性，DataNode默认每3秒会向NameNode发送心跳
+4. NameNode超过10min + 30s没有接受到DataNode的心跳后，会将DataNode剔除，认为该节点不可用，直到DataNode再次上线发送心跳
+
+#### DataNode相关配置
+
+生产环境下，根据机器配置，如果容易损上报信息间隔可以考虑配置低一些
+
+```xml
+<!-- DataNode向NameNode上报数据块元数据信息的时间间隔，默认6h -->
+<property>
+    <name>dfs.blockreport.intervalMsec</name>
+    <value>21600000</value>
+    <description>Determines block reporting interval in milliseconds.</description>
+</property>
+
+<!-- DataNode扫描自己节点信息列表，确保数据块没有问题，默认6h -->
+<property>
+    <name>dfs.datanode.directoryscan.interval</name>
+    <value>21600s</value>
+	<description>Interval in seconds for Datanode to scan data directories and reconcile the difference between blocks in memory and on
+the disk.
+Support multiple time unit suffix(case insensitive), as described
+in dfs.heartbeat.interval.
+    </description>
+</property>
+```
+
+#### DataNode数据校验
+
+DataNode在读取数据块时，会使用文件信息摘要算法，hadoop使用的是crc校验算法，对文件进行摘要后，客户端根据crc文件进行校验即可。
+
+#### DataNode心跳配置
+
+> TimeOut = 2 * dfs.namenode.heartbeat.recheck-interval + 10 * dfs.heartbeat.interval。 
+>
+> 而默认的dfs.namenode.heartbeat.recheck-interval 大小为5分钟，dfs.heartbeat.interval默认为3秒
+
+```xml
+<!-- NameNode心跳检测时间，默认5分钟检查一次，依照上面的公式判断节点是否存活 -->
+<property>
+    <name>dfs.namenode.heartbeat.recheck-interval</name>
+    <value>300000</value>
+</property>
+
+<!-- DataNode向NameNode发送心跳的时间间隔，默认3秒 -->
+<property>
+    <name>dfs.heartbeat.interval</name>
+    <value>3</value>
 </property>
 ```
 
