@@ -878,6 +878,22 @@ os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3
 -output /itheima/word_output""")
 ```
 
+```python
+import os
+"""
+-mapper 与 -reducer中可以直击使用命令的方式这样就不需要将脚本设置为可执行，也不需要在脚本上指定解释器
+注意解释器路径需要决定路径，或者使用环境变量
+"""
+os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3.3.jar \
+-mapper "$PYTHON_HOME/bin/python3 ./mapper.py" \
+-reducer "$PYTHON_HOME/bin/python3 ./reducer.py" \
+-file mapper.py \
+-file reducer.py \
+-input /itheima/word.txt \
+-output /itheima/word_output""")
+
+```
+
 mapper.py
 
 ```python
