@@ -651,6 +651,281 @@ public class HdfsClientTest {
 }
 ```
 
+## MapReduce
+
+使用`hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.3.jar pi 2 2`运行官方测试用例
+
+常见的测试用例：
+
+评估圆周率：`hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.3.jar pi 2 2`
+
+统计单词数量：`hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.3.jar wordcount /word.txt /wordcount_output`注意后面的路径是hdfs的路径
+
+### 使用Java编写自己的WordCount
+
+#### windows环境安装
+
+1. 在windows中新建一个`hadoop-3.3.3`，`$HADOOP_HOME/bin`下的文件拷贝到windows的hadoo文件的bin目录中，或者直接在下载一个hadoop，我只需要bin目录中提供的脚本。
+
+2. 为windows上的`hadoop-3.3.3`创建环境变量，`HADOOP_HOME`，并将`%HADOOP_HOME%/bin`添加到PATH
+
+3. windows还需要安装winutils，在github上搜索下载发行版，github地址：https://github.com/steveloughran/winutils
+
+4. 将winutils也解压到windows的`$HADOOP_HOME/bin`
+5. 并将winutils解压出来的`hadoop.dll`拷贝到系统盘的`Windows/System32`文件夹下
+
+#### Java代码
+
+> 编写Java代码注意导包，导入的类是hadoop相关包下。
+>
+> 导入org.apache.hadoop.mapreduce下的包，还一个org.apache.hadoop.mapred是老版本yarn还没有被分离出来时候的包。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>my.lcw.mapreduce.demos</groupId>
+    <artifactId>mapreduce_demos</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-client -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <version>3.3.3</version>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.8.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- https://mvnrepository.com/artifact/org.slf4j/slf4j-reload4j -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-reload4j</artifactId>
+            <version>1.7.36</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <descriptorRefs>jar-with-dependencies</descriptorRefs>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+```java
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-06-04
+ */
+public class WordCountDriver {
+
+
+    public static void main(String[] args) {
+
+        if (args.length < 2) {
+            System.err.println("mut has tow args: input output");
+        }
+        System.out.println(Arrays.toString(args));
+
+        try {
+            final Configuration config = new Configuration();
+            final Job job = Job.getInstance(config);
+            // 设置driver包路径
+            job.setJarByClass(WordCountDriver.class);
+
+            // 关联mapper和reducer
+            job.setMapperClass(WordCountMapper.class);
+            job.setReducerClass(WordCountReducer.class);
+
+            // 设置map的kv类型
+            job.setMapOutputKeyClass(Text.class);
+            job.setMapOutputValueClass(IntWritable.class);
+
+            // 设置最后返回的kv类型
+            job.setOutputKeyClass(Text.class);
+            job.setOutputValueClass(IntWritable.class);
+
+            FileInputFormat.setInputPaths(job, new Path(args[0]));
+            FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+            final boolean result = job.waitForCompletion(true);
+            System.exit(result ? 0 : 1);
+        } catch (IOException | InterruptedException | ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+
+    }
+}
+```
+
+```java
+public class WordCountMapper extends Mapper<LongWritable, Text, Text, IntWritable> {
+
+    /**
+     * 输出的k-v对象，避免重复创建对象
+     */
+    private Text keyOut = new Text();
+    private IntWritable valueOut = new IntWritable(1);
+
+    @Override
+    protected void map(LongWritable key, Text value,
+                       Mapper<LongWritable, Text, Text, IntWritable>.Context context)
+            throws IOException, InterruptedException {
+        // hadoop会默认读取一行传输过来
+        String content = value.toString();
+        // 分割单词
+        final String[] words = content.split(" ");
+        for (String word : words) {
+            keyOut.set(word);
+            // 输出 单词-数量，数量默为1即出现一次
+            context.write(keyOut, valueOut);
+        }
+    }
+}
+
+```
+
+```java
+public class WordCountReducer extends Reducer<Text, IntWritable, Text, IntWritable> {
+
+    /**
+     * 输出的k-v对象，避免重复创建对象
+     */
+    private IntWritable valueOut = new IntWritable();
+
+    /**
+     * reduce汇聚单词
+     * @param key 单词
+     * @param values 每行出现的数量
+     * @param context 上下文对象
+     */
+    @Override
+    protected void reduce(Text key, Iterable<IntWritable> values,
+                          Reducer<Text, IntWritable, Text, IntWritable>.Context context)
+            throws IOException, InterruptedException {
+        // 单词出现的从数量
+        int sum = 0;
+        for (IntWritable value : values) {
+            sum += value.get();
+        }
+        valueOut.set(sum);
+        // 输出 单词-总数量
+        context.write(key, valueOut);
+    }
+}
+```
+
+### Hadoop Streaming
+
+> hadoop streaming非常适合纯文本的流式处理，并且通过stdin输入，stdout输出，可以跨语言进行MapReduce计算。
+>
+> HadoopStreaming能跨语言其实就是将k-v文本内容通过stdin输入，然后将stdout作为输出结果。
+
+#### Python WordCount Demo
+
+> 用Python编写的词频统计MapReduce程序
+>
+> 使用python脚本处理hadoop streaming时，注意hdfs会将脚本作为可执行文件，所以需要将脚本权限设置为可执行。
+>
+> 脚本不需要上传到hdfs，脚本开头必须指定#!/to/python_binary/path，且不支持#!/usr/bin/env python3的方式。
+
+MapReduce启动脚本
+
+start.py
+
+```python
+import os
+
+os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3.3.jar \
+-mapper ./mapper.py \
+-reducer ./reducer.py \
+-file ./mapper.py \
+-file ./reducer.py \
+-input /itheima/word.txt \
+-output /itheima/word_output""")
+```
+
+mapper.py
+
+```python
+#!/opt/python3/bin/python3
+import sys
+
+
+if __name__ == "__main__":
+    # 遍历标准输入，默认一行的读取文件数据
+    for line in sys.stdin:
+        line = line.strip()
+        words = line.split(" ")
+        for word in words:
+			# 使用stdout来输出内容，格式`k\tv`、`k v`都行
+            print(f"{word} {1}")
+```
+
+reducer.py
+
+```python
+#!/opt/python3/bin/python3
+import sys
+
+if __name__ == "__main__":
+    pre_key = None
+    pre_val = 0
+    for line in sys.stdin:
+        line = line.strip()
+        word, count = line.split(" ", 1)
+        count = int(count)
+
+        """
+        hadoop streaming不会像java客户端一样, 自动groupby, 但是会自动排序如果有多个key的value会一连串发送过来
+        我们只需要记录上次的key, 相同就累加即可
+        """
+        if pre_key == word:
+            pre_val += 1
+        else:
+            # 有新的key直接输出即可，下次继续累加
+            if pre_key:
+                print(f"{pre_key} {pre_val}")
+            pre_key = word
+            pre_val = count
+    # 最后一个key还没有输出
+    if pre_key == word:
+        print(f"{pre_key} {pre_val}")
+```
+
 ## 面试题
 
 ### 为什么块大小能设置太小也不能设置太大
