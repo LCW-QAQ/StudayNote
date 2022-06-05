@@ -861,6 +861,8 @@ public class WordCountReducer extends Reducer<Text, IntWritable, Text, IntWritab
 > 使用python脚本处理hadoop streaming时，注意hdfs会将脚本作为可执行文件，所以需要将脚本权限设置为可执行。
 >
 > 脚本不需要上传到hdfs，脚本开头必须指定#!/to/python_binary/path，且不支持#!/usr/bin/env python3的方式。
+>
+> 编写HadoopStreaming Python脚本时，注意报错信息可能是PipeMapRed.waitOutputThreads(): subprocess failed with code 1等，先判断代码是否有问题，再去网上查询错误码对应的错误，网上错误类型太多容易带偏。如果代码运行时map 100% reduce 100%正常显示，但是报错极大可能是代码有问题，优先检查代码。
 
 MapReduce启动脚本
 
@@ -881,8 +883,7 @@ os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3
 ```python
 import os
 """
--mapper 与 -reducer中可以直击使用命令的方式这样就不需要将脚本设置为可执行，也不需要在脚本上指定解释器
-注意解释器路径需要决定路径，或者使用环境变量
+-mapper与-reducer中可以直击使用命令的方式这样就不需要将脚本设置为可执行，也不需要在脚本上指定解释器，注意解释器路径需要决定路径，或者使用环境变量
 """
 os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3.3.jar \
 -mapper "$PYTHON_HOME/bin/python3 ./mapper.py" \
@@ -891,7 +892,16 @@ os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3
 -file reducer.py \
 -input /itheima/word.txt \
 -output /itheima/word_output""")
+```
 
+建议新版本使用下面的命令：
+
+```python
+os.system("""mapred streaming -files ./mapper.py,./reducer.py \
+-mapper "$PYTHON_HOME/bin/python3 ./mapper.py" \
+-reducer "$PYTHON_HOME/bin/python3 ./reducer.py" \
+-input /itheima/word.txt \
+-output /itheima/word_output""")
 ```
 
 mapper.py
@@ -926,7 +936,7 @@ if __name__ == "__main__":
         count = int(count)
 
         """
-        hadoop streaming不会像java客户端一样, 自动groupby, 但是会自动排序如果有多个key的value会一连串发送过来
+        hadoop streaming不会像java客户端一样自动groupby成key=[values]形式, 但是会自动排序如果有多个key的value会一连串发送过来
         我们只需要记录上次的key, 相同就累加即可
         """
         if pre_key == word:
@@ -951,6 +961,12 @@ if __name__ == "__main__":
 - 块大小由存储介质的IO速度决定
 
 一般中小型公司使用的都是128m，大公司才会使用256m
+
+
+
+注意大量小文件不适合使用MapReduce存储
+
+寻址时间为传输时间的1% 时，则为最佳状态。因此，传输时间 =10ms/0.01=1000ms=1s。
 
 ### HDFS写入流程
 
