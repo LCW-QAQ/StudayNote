@@ -1459,6 +1459,486 @@ public class FlowSortReducer extends Reducer<FlowBean, Text, Text, FlowBean> {
 }
 ```
 
+### Combiner
+
+> 一般情况下ReducerTask的数量远x小于MapTask的数量，因此ReduceTask压力很大。
+>
+> 我们可以再MapTask map后，就将数据提前汇聚，然后再交由Reducer，减小ReduceTask压力。
+>
+> 例如：现在有10条id相同的记录（id, price），我们需要求price总和，完全可以再Map阶段先将数据汇总。
+>
+> Combiner其实就是Reducer，只不过Combiner实在Map运行后执行。
+
+Combiner做的事与Reducer事实上是一致的，因此我们直接将Reducer类设置为Combiner即可。
+
+还是单词词频统计的案例
+
+```java
+public class WordCountDriver {
+
+
+    public static void main(String[] args) {
+
+        try {
+            final Configuration config = new Configuration();
+            final Job job = Job.getInstance(config);
+            // 设置driver包路径
+            job.setJarByClass(WordCountDriver.class);
+
+            // 关联mapper和reducer
+            job.setMapperClass(WordCountMapper.class);
+            job.setReducerClass(WordCountReducer.class);
+
+            // 设置map的kv类型
+            job.setMapOutputKeyClass(Text.class);
+            job.setMapOutputValueClass(IntWritable.class);
+
+            // 设置最后返回的kv类型
+            job.setOutputKeyClass(Text.class);
+            job.setOutputValueClass(IntWritable.class);
+
+            // 这里将Combiner设置为Reducer即可
+             job.setCombinerClass(WordCountReducer.class);
+
+            FileInputFormat.setInputPaths(job, new Path("./word.txt"));
+            FileOutputFormat.setOutputPath(job, new Path("./word_output"));
+
+            final boolean result = job.waitForCompletion(true);
+            System.exit(result ? 0 : 1);
+        } catch (IOException | InterruptedException | ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+
+    }
+}
+```
+
+### 自定义FileOutputFormat与RecordWriter
+
+> OutputFormat作用于Reduce之后，持久化磁盘操作
+
+数据模板：
+
+```
+http://www.baidu.com
+http://www.google.com
+http://cn.bing.com
+http://www.atguigu.com
+http://www.sohu.com
+http://www.sina.com
+http://www.sin2a.com
+http://www.sin2desa.com
+http://www.sindsafa.com
+```
+
+需要从上面的网站过滤出atguigu并输出到atguigu.log中，其他的网站输出到other.log
+
+```java
+public class GuiguLogDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        job.setJarByClass(GuiguLogDriver.class);
+
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(NullWritable.class);
+
+        job.setMapperClass(GuiguLogMapper.class);
+        job.setReducerClass(GuiguLogReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(NullWritable.class);
+
+        // 设置自定义的OutputFormat类
+        job.setOutputFormatClass(GuiguLogFileOutputFormat.class);
+
+        FileInputFormat.setInputPaths(job, new Path("./log.txt"));
+        // 仍然使用FileOutputFormat接口设置输出路径
+        FileOutputFormat.setOutputPath(job, new Path("./atguigulog_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+mapper
+
+```java
+public class GuiguLogMapper extends Mapper<LongWritable, Text, Text, NullWritable> {
+    @Override
+    protected void map(LongWritable key, Text value,
+                       Mapper<LongWritable, Text, Text, NullWritable>.Context context)
+            throws IOException, InterruptedException {
+        // mapper不需要做其他处理，在RecordWriter处理
+        context.write(value, NullWritable.get());
+    }
+}
+```
+
+reducer
+
+```java
+public class GuiguLogReducer extends Reducer<Text, NullWritable, Text, NullWritable> {
+    @Override
+    protected void reduce(Text key, Iterable<NullWritable> values,
+                          Reducer<Text, NullWritable, Text, NullWritable>.Context context)
+            throws IOException, InterruptedException {
+        // 网站可以重复，这里要循环写入
+        for (NullWritable value : values) {
+            context.write(key, NullWritable.get());
+        }
+    }
+}
+```
+
+自定义RecordWriter输出文件
+
+```java
+public class GuiguLogRecordWriter extends RecordWriter<Text, NullWritable> {
+
+    private FSDataOutputStream guigulogOutStream;
+
+    private FSDataOutputStream otherlogOutStream;
+
+    private static final String ATGUIGU_WEB_URL = "http://www.atguigu.com";
+
+    public GuiguLogRecordWriter(TaskAttemptContext job) {
+        try {
+            final FileSystem fs = FileSystem.get(job.getConfiguration());
+            guigulogOutStream = fs.create(new Path("./atguigulog_output/atguigu.log"));
+            otherlogOutStream = fs.create(new Path("./atguigulog_output/other.log"));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public void write(Text text, NullWritable nullWritable) throws IOException, InterruptedException {
+        final String webPath = text.toString();
+        // 是atguigu的日志就写入到指定atguigu.log中
+        if (webPath.contains(ATGUIGU_WEB_URL)) {
+            guigulogOutStream.writeBytes(webPath + "\n");
+        } else {
+            // 其他日志写入到other.log中
+            otherlogOutStream.writeBytes(webPath + "\n");
+        }
+    }
+
+    @Override
+    public void close(TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
+        IOUtils.closeStream(guigulogOutStream);
+        IOUtils.closeStream(otherlogOutStream);
+    }
+}
+```
+
+### MapReduce的Join操作
+
+> MapReduce程序要做类似sql的join操作稍显麻烦
+>
+> sql自动帮我们连接了两张表的数据，而在MapReduce中我们需要存储两张表的数据，并通过Key分区连接字段
+
+#### ReduceJoin
+
+```java
+public class TableDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        // 设置driver包路径
+        job.setJarByClass(TableDriver.class);
+
+        // 关联mapper和reducer
+        job.setMapperClass(TableMapper.class);
+        job.setReducerClass(TableReducer.class);
+
+        // 设置map的kv类型
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(TableBean.class);
+
+        // 设置最后返回的kv类型
+        job.setOutputKeyClass(TableBean.class);
+        job.setOutputValueClass(NullWritable.class);
+
+        FileInputFormat.setInputPaths(job,
+                new Path("./inputtable/order.txt"),
+                new Path("./inputtable/pd.txt"));
+        FileOutputFormat.setOutputPath(job, new Path("./inputtable_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+存储两张表连接的数据
+
+```java
+@Data
+public class TableBean implements Writable {
+
+    /**
+     * 订单id
+     */
+    private String id;
+
+    /**
+     * 商品id
+     */
+    private String pid;
+
+    /**
+     * 订单金额
+     */
+    private int amount;
+
+    /**
+     * 商品名称
+     */
+    private String pname;
+
+    /**
+     * 表名
+     */
+    private String tableName;
+
+    public TableBean() {
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+        out.writeUTF(id);
+        out.writeUTF(pid);
+        out.writeInt(amount);
+        out.writeUTF(pname);
+        out.writeUTF(tableName);
+    }
+
+    @Override
+    public void readFields(DataInput in) throws IOException {
+        this.id = in.readUTF();
+        this.pid = in.readUTF();
+        this.amount = in.readInt();
+        this.pname = in.readUTF();
+        this.tableName = in.readUTF();
+    }
+
+    @Override
+    public String toString() {
+        // 商品id    商品名称    订单金额
+        return id + "\t" + pname + "\t" + amount;
+    }
+}
+```
+
+mapper
+
+```java
+public class TableMapper extends Mapper<LongWritable, Text, Text, TableBean> {
+
+    private String fileName;
+
+    private FileSplit fileSplit;
+
+    /**
+     * 商品id
+     */
+    private final Text outK = new Text();
+
+    /**
+     * 聚合订单与商品两张表的结果
+     */
+    private final TableBean outV = new TableBean();
+
+    @Override
+    protected void setup(Mapper<LongWritable, Text, Text, TableBean>.Context context) throws IOException, InterruptedException {
+        // 通过FileSplit获取切片文件名
+        // 每个文件（MapTask）都只需要获取一次文件名
+        fileSplit = (FileSplit) context.getInputSplit();
+
+        fileName = fileSplit.getPath().getName();
+    }
+
+    @Override
+    protected void map(LongWritable key, Text value,
+                       Mapper<LongWritable, Text, Text, TableBean>.Context context)
+            throws IOException, InterruptedException {
+        final String line = value.toString();
+        if (fileName.contains("order")) {
+            /*
+            订单id   商品id   金额
+            1001      01      1
+             */
+            final String[] lines = line.split("\t");
+            outK.set(lines[1]);
+            outV.setId(lines[0]);
+            outV.setPid(lines[1]);
+            outV.setAmount(Integer.parseInt(lines[2]));
+            outV.setPname("");
+            outV.setTableName("order");
+        } else {
+            final String[] lines = line.split("\t");
+            /*
+            商品id   商品名称
+              01     小米
+             */
+            outK.set(lines[0]);
+            outV.setId("");
+            outV.setPid(lines[0]);
+            outV.setAmount(0);
+            outV.setPname(lines[1]);
+            outV.setTableName("pd");
+        }
+
+        context.write(outK, outV);
+    }
+}
+```
+
+reducer
+
+```java
+public class TableReducer extends Reducer<Text, TableBean, TableBean, NullWritable> {
+    @Override
+    protected void reduce(Text key, Iterable<TableBean> values,
+                          Reducer<Text, TableBean, TableBean, NullWritable>.Context context)
+            throws IOException, InterruptedException {
+        List<TableBean> orderTableBeans = new ArrayList<>();
+        TableBean productTableBean = new TableBean();
+
+        for (TableBean value : values) {
+            // 是订单表的数据就添加到订单数据列表中
+            if ("order".equals(value.getTableName())) {
+                /*
+                注意这里有坑
+                hadoop mapreduce对迭代器进行了优化，每次迭代出来的是同一个对象，迭代只是更改了对象的值而已
+                所以这里需要创建新的对象
+                 */
+                try {
+                    final TableBean tempTableBean = new TableBean();
+                    BeanUtils.copyProperties(tempTableBean, value);
+                    orderTableBeans.add(tempTableBean);
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    e.printStackTrace();
+                }
+            } else {
+                try {
+                    BeanUtils.copyProperties(productTableBean, value);
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        for (TableBean orderTableBean : orderTableBeans) {
+            // 给商品名称赋值
+            orderTableBean.setPname(productTableBean.getPname());
+
+            context.write(orderTableBean, NullWritable.get());
+        }
+    }
+}
+```
+
+#### MapJoin
+
+> 本身ReduceTask就要少于MapTask，如果现在有一个很大的文件和一个很小的文件，我们使用ReduceJoin，会导致ReduceTask压力过大。
+>
+> 可以在map阶段join利用多个MapTask提升性能，思路就是利用hadoop mapreduce提供了分布式缓存，先将小表的数据缓存，然后再map中做连表操作。
+>
+> ！！！下面的代码在我的win上报错了，但是代码真的找不出什么问题了
+
+```java
+public class TableMapJoinDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException, URISyntaxException {
+
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        // 设置driver包路径
+        job.setJarByClass(TableMapJoinDriver.class);
+
+        // 关联mapper和reducer
+        job.setMapperClass(TableJoinMapper.class);
+
+        // 设置map的kv类型
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(NullWritable.class);
+
+        // 设置最后返回的kv类型
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(NullWritable.class);
+
+        // 利用分布式缓存，将商品表缓存起来，map阶段也可以读取使用
+//        job.addCacheFile(URI.create("./inputtable/pd.txt"));
+        job.addCacheFile(
+                new URI("file:/D:/study/java/hadoop/mapreduce_demos/inputtable/pd.txt")
+        );
+        // 现在计算只在map阶段，不需要进行reduce操作
+        job.setNumReduceTasks(0);
+
+        FileInputFormat.setInputPaths(job,
+                new Path("./inputtable/order.txt"));
+        FileOutputFormat.setOutputPath(job, new Path("./inputtable_mapjoin_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+```java
+public class TableJoinMapper extends Mapper<LongWritable, Text, Text, NullWritable> {
+
+    /**
+     * 商品表映射
+     * 商品id - 商品名称
+     */
+    private final Map<String, String> productMap = new HashMap<>();
+
+    private final Text outK = new Text();
+
+    @Override
+    protected void setup(Mapper<LongWritable, Text, Text, NullWritable>.Context context) throws IOException, InterruptedException {
+        // 获取缓存里的商品表文件
+        final URI[] uri = context.getCacheFiles();
+        final FileSystem fs = FileSystem.get(context.getConfiguration());
+        FSDataInputStream productOutputStream = null;
+        try {
+            productOutputStream = fs.open(new Path(uri[0]));
+
+            final BufferedReader br = new BufferedReader(new InputStreamReader(productOutputStream));
+            String line;
+            while (StringUtils.isNoneEmpty(line = br.readLine())) {
+                // 商品id    商品名
+                final String[] contents = line.split("\t");
+
+                productMap.put(contents[0], contents[1]);
+            }
+        } finally {
+            IOUtils.closeStream(productOutputStream);
+        }
+    }
+
+    @Override
+    protected void map(LongWritable key, Text value,
+                       Mapper<LongWritable, Text, Text, NullWritable>.Context context)
+            throws IOException, InterruptedException {
+        final String line = value.toString();
+        // 订单id    商品id    金额
+        final String[] contents = line.split("\t");
+
+        String orderId = contents[0];
+        String pid = contents[1];
+        long amount = Long.parseLong(contents[2]);
+
+        outK.set(String.format("%s\t%s\t%s", orderId, productMap.get(pid), amount));
+        context.write(outK, NullWritable.get());
+    }
+}
+```
+
 ## 面试题
 
 ### 为什么块大小能设置太小也不能设置太大
@@ -1471,9 +1951,9 @@ public class FlowSortReducer extends Reducer<FlowBean, Text, Text, FlowBean> {
 
 
 
-注意大量小文件不适合使用MapReduce存储
+注意大量小文件不适合使用MapReduce存储（可以尝试使用CombineTextInputFormat解决）。
 
-寻址时间为传输时间的1% 时，则为最佳状态。因此，传输时间 =10ms/0.01=1000ms=1s。
+寻址时间为传输时间的1% 时，则为最佳状态。
 
 ### HDFS写入流程
 
@@ -1681,7 +2161,7 @@ Hadoop会为每个切片分配一个MapTask进行计算。
 
 
 
-#### FileInputFormat分片源码
+#### FileInputFormat切片源码
 
 1. 开始遍历处理（规划切片）目录下的每一个文件
 2. 遍历一个文件
@@ -1779,3 +2259,15 @@ public List<InputSplit> getSplits(JobContext job) throws IOException {
     }
 }
 ```
+
+### MapReduce工作机制
+
+// TODO
+
+### 如何决定ReduceTask并行度
+
+// TODO
+
+### MapTask & ReduceTask源码解析
+
+// TODO
