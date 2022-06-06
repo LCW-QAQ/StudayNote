@@ -952,6 +952,48 @@ if __name__ == "__main__":
         print(f"{pre_key} {pre_val}")
 ```
 
+### InputFormat
+
+##### TextInputFotmat
+
+hadoop mapreduce默认的格式化输入
+
+一行一行的读取文件，key是每行开头的偏移量，value是一行的内容（包含换行符）
+
+##### CombineTextFormat
+
+用于处理大量小文件计算，hadoop会对每个文件进行逻辑分片，为每个分片开启一个MapTask去处理（默认块大小等于分片大小）。
+
+这会导致开启大量MapTask，反而降低性能。
+
+CombineTextFormat可以通过setMaxInputSplitSize方法，指定maxInputSplitSize，可以理解为手动设置了一个分片大小，超过这个大小才会走分片策略。
+
+CombineTextFormat分片策略：
+
+现在有四个小文件分别是`a.txt`、`b.txt`、`c.txt`、`d.txt`
+
+| 文件名 | 文件大小（MB） |
+| ------ | -------------- |
+| a.txt  | 1.7            |
+| b.txt  | 5.1            |
+| c.txt  | 3.4            |
+| d.txt  | 6.8            |
+
+首先会经历虚拟存储（虚拟分片/预分片）过程
+
+**小于maxInputSplitSize的文件不会被虚拟分片，大于maxInputSplitSize的分片如果小于2倍的maxInputSplitSize还是会被分成两片（文件大小除2）。**
+
+下面以maxInputSplitSize为4MB举例
+
+| 文件名  | 分片大小（MB） | 描述                                |
+| ------- | -------------- | ----------------------------------- |
+| a_1.txt | 1.7            | 1.7 < 4，划分为一块                 |
+| b_1.txt | 2.55            |5.1 > 4，但是小于2 * 4， 划分为两块 |
+| b_2.txt | 2.55            |5.1 > 4，但是小于2 * 4， 划分为两块 |
+| c_1.txt | 3.4            | 3.4 < 4，划分为一块                 |
+| d_1.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
+| d_2.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
+
 ## 面试题
 
 ### 为什么块大小能设置太小也不能设置太大
@@ -1183,6 +1225,8 @@ Hadoop会为每个切片分配一个MapTask进行计算。
     - 开始切片，每次切片都会判断剩下的是否>切片大小的1.1倍，只有大于才会切片。
     - getSplits方法返回的List\<InputSplit\>中InputSplit只包含分片的元数据信息，真正的切片操作由yarn进行分片，并开启MapTask进行计算。
 
+// TODO 画图
+
 ```java
 /*
 计算分片大小，minSize默认为1，maxSize默认为long的最大值，因此默认切片大小就是块大小
@@ -1270,4 +1314,3 @@ public List<InputSplit> getSplits(JobContext job) throws IOException {
     }
 }
 ```
-
