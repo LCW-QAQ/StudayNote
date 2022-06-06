@@ -960,15 +960,15 @@ hadoop mapreduce默认的格式化输入
 
 一行一行的读取文件，key是每行开头的偏移量，value是一行的内容（包含换行符）
 
-##### CombineTextFormat
+##### CombineTextInputFormat
 
 用于处理大量小文件计算，hadoop会对每个文件进行逻辑分片，为每个分片开启一个MapTask去处理（默认块大小等于分片大小）。
 
 这会导致开启大量MapTask，反而降低性能。
 
-CombineTextFormat可以通过setMaxInputSplitSize方法，指定maxInputSplitSize，可以理解为手动设置了一个分片大小，超过这个大小才会走分片策略。
+CombineTextInputFormat可以通过setMaxInputSplitSize方法，指定maxInputSplitSize，可以理解为手动设置了一个分片大小，超过这个大小才会走分片策略。
 
-CombineTextFormat分片策略：
+CombineTextInputFormat分片策略：
 
 现在有四个小文件分别是`a.txt`、`b.txt`、`c.txt`、`d.txt`
 
@@ -993,6 +993,14 @@ CombineTextFormat分片策略：
 | c_1.txt | 3.4            | 3.4 < 4，划分为一块                 |
 | d_1.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
 | d_2.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
+
+##### KeyValueInputFormat
+
+根据指定的分隔符，将一行分割为k-v形式，就是帮你进行split操作（最大分割1次）
+
+##### NLineInputFormat
+
+一次读取多行进行处理，key是偏移量，value是多行内容
 
 ## 面试题
 
