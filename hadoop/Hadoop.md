@@ -954,13 +954,13 @@ if __name__ == "__main__":
 
 ### InputFormat
 
-##### TextInputFotmat
+#### TextInputFotmat
 
 hadoop mapreduce默认的格式化输入
 
 一行一行的读取文件，key是每行开头的偏移量，value是一行的内容（包含换行符）
 
-##### CombineTextInputFormat
+#### CombineTextInputFormat
 
 用于处理大量小文件计算，hadoop会对每个文件进行逻辑分片，为每个分片开启一个MapTask去处理（默认块大小等于分片大小）。
 
@@ -994,13 +994,470 @@ CombineTextInputFormat分片策略：
 | d_1.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
 | d_2.txt | 3.4            | 6.8 > 4，但是小于2 * 4，划分为两块  |
 
-##### KeyValueInputFormat
+#### KeyValueInputFormat
 
 根据指定的分隔符，将一行分割为k-v形式，就是帮你进行split操作（最大分割1次）
 
-##### NLineInputFormat
+#### NLineInputFormat
 
 一次读取多行进行处理，key是偏移量，value是多行内容
+
+### Partition
+
+> 可以自定义Partition来实现自定义分区， 其实就是根据key的分组操作
+
+**注意getPartition方法输出结果必须从0开始，以步长为1子自增**
+
+1. 分区数 >= ReduceTask数量，会产生空的输出文件
+2. 分区数 < ReduceTask数量，会报错
+3. 当ReduceTask数量为1时，根本就不会走自定义的partition类，全部输出到一个文件中
+
+#### Java Demo
+
+```java
+/**
+ * 根据手机号归属地分区
+ */
+public class ProvincePartitioner extends Partitioner<Text, FlowBean> {
+    @Override
+    public int getPartition(Text text, FlowBean flowBean, int i) {
+        final String phoneNum = text.toString();
+        int partition = -1;
+        switch (phoneNum.substring(0, 3)) {
+            case "136":
+                partition = 0;
+                break;
+            case "137":
+                partition = 1;
+                break;
+            case "138":
+                partition = 2;
+                break;
+            case "139":
+                partition = 3;
+                break;
+            default:
+                partition = 4;
+                break;
+        }
+        return partition;
+    }
+}
+```
+
+```java
+public class FlowPartitionDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        job.setJarByClass(FlowPartitionDriver.class);
+
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(FlowBean.class);
+
+        job.setMapperClass(FlowMapper.class);
+        job.setReducerClass(FlowReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(FlowBean.class);
+
+        /*
+        分区数 >= ReduceTask数量，会产生空的输出文件
+        分区数 < ReduceTask数量，会报错
+        当ReduceTask数量为1时，根本就不会走自定义的partition类，全部输出到一个文件中
+         */
+        job.setNumReduceTasks(5);
+        job.setPartitionerClass(ProvincePartitioner.class);
+
+        FileInputFormat.setInputPaths(job, new Path("./phone_data.txt"));
+        FileOutputFormat.setOutputPath(job, new Path("./phone_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+#### HadoopStreaming Demo
+
+> HadoopStreaming只适合处理文本内容，对于其他形式的文件以及自定义分区，实现起来不方便。
+>
+> 如果有自定义分区策略、处理其他形式文件等需求，还是使用Java开发更好。（赶紧Hive、Hbase、Spark、Flink上号）
+
+运行时配置参数即可：
+
+**注意-D参数必须在最前面**
+
+* -partitioner org.apache.hadoop.mapred.lib.KeyFieldBasedPartitioner
+    * 按指定分隔符，分割字符串（最多分割一次）后的数组contents，contents[0]-contents[1]以Key-Value形式输出。
+* -D map.output.key.field.separator=\t
+    * 指定分隔符为`\t`
+* -D num.key.fields.for.partition=1
+    * 指定分区字段索引（contents[1]）
+* -D mapreduce.job.reduces=10
+    * 设置ReduceTask数量
+
+```python
+import os
+
+os.system("""mapred streaming \
+-D map.output.key.field.separator=\t \
+-D num.key.fields.for.partition=1 \
+-D mapreduce.job.reduces=10 \
+-files ./mapper.py,./reducer.py \
+-mapper "$PYTHON_HOME/bin/python3 ./mapper.py" \
+-reducer "$PYTHON_HOME/bin/python3 ./reducer.py" \
+-input /itheima/phone_data.txt \
+-output /itheima/phone_output \
+-partitioner org.apache.hadoop.mapred.lib.KeyFieldBasedPartitioner
+""")
+```
+
+### MapReduce自定义排序与分区
+
+现在要按照省份划分电话号码，要将`136`、`137`、`138`、`139`开头的号码单独存放一个文件，其他存放在到另一个文件。
+
+并且每个文件都要按照总流量降序，如果总流量相等则按照上行流量升序。
+
+数据样本如下：
+
+```
+1	13736230513	192.196.100.1	www.atguigu.com	2481	24681	200
+2	13846544121	192.196.100.2			264	0	200
+3 	13956435636	192.196.100.3			132	1512	200
+4 	13966251146	192.168.100.1			240	0	404
+5 	18271575951	192.168.100.2	www.atguigu.com	1527	2106	200
+6 	84188413	192.168.100.3	www.atguigu.com	4116	1432	200
+7 	13590439668	192.168.100.4			1116	954	200
+8 	15910133277	192.168.100.5	www.hao123.com	3156	2936	200
+9 	13729199489	192.168.100.6			240	0	200
+10 	13630577991	192.168.100.7	www.shouhu.com	6960	690	200
+11 	15043685818	192.168.100.8	www.baidu.com	3659	3538	200
+12 	15959002129	192.168.100.9	www.atguigu.com	1938	180	500
+13 	13560439638	192.168.100.10			918	4938	200
+14 	13470253144	192.168.100.11			180	180	200
+15 	13682846555	192.168.100.12	www.qq.com	1938	2910	200
+16 	13992314666	192.168.100.13	www.gaga.com	3008	3720	200
+17 	13509468723	192.168.100.14	www.qinghua.com	7335	110349	404
+18 	18390173782	192.168.100.15	www.sogou.com	9531	2412	200
+19 	13975057813	192.168.100.16	www.baidu.com	11058	48243	200
+20 	13768778790	192.168.100.17			120	120	200
+21 	13568436656	192.168.100.18	www.alibaba.com	2481	24681	200
+22 	13568436656	192.168.100.19			1116	954	200
+```
+
+#### 抽取信息
+
+> 原数据是每个手机号的流量流水记录，现在需要根据手机号做groupby，求出总流水额
+
+主方法
+
+```java
+public class FlowDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+        /*if (args.length < 2) {
+            throw new IllegalArgumentException("must has tow args: input output%n");
+        }*/
+
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        job.setJarByClass(FlowDriver.class);
+
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(FlowBean.class);
+
+        job.setMapperClass(FlowMapper.class);
+        job.setReducerClass(FlowReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(FlowBean.class);
+
+        FileInputFormat.setInputPaths(job, new Path("./phone_data.txt"));
+        FileOutputFormat.setOutputPath(job, new Path("./phone_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+序列化类
+
+```java
+@Data
+@Accessors(chain = true)
+public class FlowBean implements Writable, WritableComparable<FlowBean> {
+
+    private long upFlow;
+
+    private long downFlow;
+
+    private long sumFlow;
+
+    public FlowBean() {
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+        out.writeLong(upFlow);
+        out.writeLong(downFlow);
+        out.writeLong(sumFlow);
+    }
+
+    @Override
+    public void readFields(DataInput in) throws IOException {
+        this.upFlow = in.readLong();
+        this.downFlow = in.readLong();
+        this.sumFlow = in.readLong();
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%s\t%s\t%s", this.upFlow, this.downFlow, this.sumFlow);
+    }
+
+    // 在当前类作为Key的时候，hadoop会使用下面的方法排序
+    @Override
+    public int compareTo(FlowBean o) {
+
+        return (int) (o.getSumFlow() == this.getSumFlow()
+                        ? this.getUpFlow() - o.getUpFlow() : o.getSumFlow() - this.getSumFlow());
+    }
+}
+```
+
+mapper
+
+```java
+public class FlowMapper extends Mapper<LongWritable, Text, Text, FlowBean> {
+
+    private final Text outKey = new Text();
+
+    private final FlowBean flowBean = new FlowBean();
+
+    @Override
+    protected void map(LongWritable key, Text value,
+                       Mapper<LongWritable, Text, Text, FlowBean>.Context context)
+            throws IOException, InterruptedException {
+        // 获取一行
+        // 1   13736230513    192.196.100.1  www.atguigu.com    2481   24681  200
+        final String line = value.toString();
+        final String[] contents = line.split("\t");
+
+        outKey.set(contents[1]);
+
+        final int n = contents.length;
+        final long upFlow = Long.parseLong(contents[n - 3]);
+        final long downFlow = Long.parseLong(contents[n - 2]);
+        flowBean.setUpFlow(upFlow)
+                .setDownFlow(downFlow)
+                .setSumFlow(upFlow + downFlow);
+
+        context.write(outKey, flowBean);
+    }
+}
+```
+
+reducer
+
+```java
+public class FlowReducer extends Reducer<Text, FlowBean, Text, FlowBean> {
+
+    private final Text outKey = new Text();
+
+    private final FlowBean flowBean = new FlowBean();
+
+    @Override
+    protected void reduce(Text key, Iterable<FlowBean> values,
+                          Reducer<Text, FlowBean, Text, FlowBean>.Context context)
+            throws IOException, InterruptedException {
+        long totalUp = 0, totalDown = 0, totalSum = 0;
+        for (FlowBean value : values) {
+            totalUp += value.getUpFlow();
+            totalDown += value.getDownFlow();
+        }
+        totalSum = totalUp + totalDown;
+
+        flowBean.setUpFlow(totalUp)
+                .setDownFlow(totalDown)
+                .setSumFlow(totalSum);
+
+        outKey.set(key.getBytes());
+        context.write(outKey, flowBean);
+    }
+}
+```
+
+最后抽取的数据如下：
+
+电话号码	总上行流量	总下行流量	总流量
+
+```
+13470253144	180	180	360
+13509468723	7335	110349	117684
+13560439638	918	4938	5856
+```
+
+#### 在抽取出的信息上排序和分区
+
+> 根据每条手机号总流水记录，按指定规则分区和排序
+
+```java
+public class FlowSortPartitionDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+        final Configuration config = new Configuration();
+        final Job job = Job.getInstance(config);
+        job.setJarByClass(FlowSortPartitionDriver.class);
+
+        job.setMapOutputKeyClass(FlowBean.class);
+        job.setMapOutputValueClass(Text.class);
+
+        job.setMapperClass(FlowSortMapper.class);
+        job.setReducerClass(FlowSortReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(FlowBean.class);
+
+        job.setPartitionerClass(ProvincePartitioner2.class);
+        job.setNumReduceTasks(5);
+
+        FileInputFormat.setInputPaths(job, new Path("./phone_output/part-r-00000"));
+        FileOutputFormat.setOutputPath(job, new Path("./phone_sort_cmp_output"));
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+序列化类
+
+```java
+@Data
+@Accessors(chain = true)
+public class FlowBean implements Writable, WritableComparable<FlowBean> {
+
+    private long upFlow;
+
+    private long downFlow;
+
+    private long sumFlow;
+
+    public FlowBean() {
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+        out.writeLong(upFlow);
+        out.writeLong(downFlow);
+        out.writeLong(sumFlow);
+    }
+
+    @Override
+    public void readFields(DataInput in) throws IOException {
+        this.upFlow = in.readLong();
+        this.downFlow = in.readLong();
+        this.sumFlow = in.readLong();
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%s\t%s\t%s", this.upFlow, this.downFlow, this.sumFlow);
+    }
+
+    // 在当前类作为Key的时候，hadoop会使用下面的方法排序
+    @Override
+    public int compareTo(FlowBean o) {
+
+        return (int) (o.getSumFlow() == this.getSumFlow()
+                        ? this.getUpFlow() - o.getUpFlow() : o.getSumFlow() - this.getSumFlow());
+    }
+}
+```
+分区类
+
+```java
+public class ProvincePartitioner2 extends Partitioner<FlowBean, Text> {
+
+    @Override
+    public int getPartition(FlowBean flowBean, Text text, int i) {
+        final String phoneNum = text.toString();
+        int partition;
+        switch (phoneNum.substring(0, 3)) {
+            case "136":
+                partition = 0;
+                break;
+            case "137":
+                partition = 1;
+                break;
+            case "138":
+                partition = 2;
+                break;
+            case "139":
+                partition = 3;
+                break;
+            default:
+                partition = 4;
+                break;
+        }
+        return partition;
+    }
+}
+```
+
+mapper
+
+```java
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-06-06
+ * 将FlowBean作为key输出，hadoop根据key进行排序，由于FlowBean实现了WriteableComparable，会走自定义排序规则
+ */
+public class FlowSortMapper extends Mapper<LongWritable, Text, FlowBean, Text> {
+
+    private final FlowBean outKey = new FlowBean();
+
+    private final Text outVal = new Text();
+
+    @Override
+    protected void map(LongWritable key,
+                       Text value,
+                       Mapper<LongWritable, Text, FlowBean, Text>.Context context)
+            throws IOException, InterruptedException {
+        final String line = value.toString();
+        final String[] contents = line.split("\t");
+        System.out.println(contents.length + ", contents: " + Arrays.toString(contents));
+
+        // 第一个位置就是手机号
+        outVal.set(contents[0]);
+
+        final long upFlow = Long.parseLong(contents[1]);
+        final long downFlow = Long.parseLong(contents[2]);
+        outKey.setUpFlow(upFlow);
+        outKey.setDownFlow(downFlow);
+        outKey.setSumFlow(upFlow + downFlow);
+
+        context.write(outKey, outVal);
+    }
+}
+```
+
+reducer
+
+```java
+public class FlowSortReducer extends Reducer<FlowBean, Text, Text, FlowBean> {
+    @Override
+    protected void reduce(FlowBean key, Iterable<Text> values,
+                          Reducer<FlowBean, Text, Text, FlowBean>.Context context)
+            throws IOException, InterruptedException {
+        // values是手机号，将当前分区内的手机号全部写入文件即可
+        for (Text value : values) {
+            context.write(value, key);
+        }
+    }
+}
+```
 
 ## 面试题
 
