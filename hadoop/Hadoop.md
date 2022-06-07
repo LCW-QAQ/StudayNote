@@ -2028,13 +2028,90 @@ public class WebLogDriver {
 }
 ```
 
-### 如何查看Hadoop所有配置项
+## 如何查看Hadoop所有配置项
 
 > 直接解压hadoop的jar包，在resource目录下有所有默认配置文件（配置文件中有对所有配置的描述）
 
+## Yarn
+
+> yarn负责为分布式系统提供资源调度。
+>
+> Yarn 是一个资源调度平台，负责为运算程序提供服务器运算资源，相当于一个分布式的操作系统平台，而MapReduce等运算程序则相当于运行于操作系统之上的应用程序。
+
+### Yarn基础架构
+
+> yarn由ResourceManager、NodeManager、ApplicationMaster和Container
+
+* ResourceManger（RM）
+    * yarn的主节点，负责整个集群任务调度，任何时刻运行MapTask都需要向RM申请
+    * 处理客户端申请资源的请求
+    * 启动和监控ApplicationMaster
+* NodeManager（NM）
+    * 管理单节点上的资源
+    * 处理来自ApplicationMaster与RM的命令
+* ApplicationMaster
+    * NM中的程序，真正为当前节点申请与分配资源的程序
+    * 监控与容错
+* Container
+    * 与docker容器概念类似，负责管理当前节点的CPU、磁盘、内存、网络等，同样是NM中的程序
+    * 容器也是yarn资源调度的最小单位
+
+![Yarn基础架构](Hadoop.assets/Yarn基础架构.png)
+
+yarn工作简述：
+
+1. ResourceManager负责集群的资源调度，任何MapReduce程序想要运行都需要向ResourceManager申请资源。
+2. 资源申请成功后会向ResourceManager的队列加入一个任务，NodeManger空闲时会主动拉取Job来执行。
+3. 拉取Job后NodeManger也需要向ResrouceManger申请资源启动容器运行，每个容器对应一个MapTask程序，容器不一定在同一台机器上。
+
+### Yarn工作机制
+
+1. MapReduce程序提交到客户端所在的节点
+2. YarnRunner向RM申请资源
+3. RM将程序所需的资源路径返回给YarnRunner
+4. 程序提交所需资源到HDFS上（包含jar包、xml配置文件、split切片信息）
+5. 资源文件提交完成后，申请运行MapReduceApplicationMaster
+6. RM根据Job创建一个任务并加入队列中
+7. 空闲的NM领取到任务
+8. NM开启Container，产生MRAppMaster
+9. Container从HDFS上拷贝计算所需要的资源到本地
+10. 当前节点的MRAppMaster向RM申请运行MapTask资源
+11. RM将运行MapTask的任务分配给多个NM，NM获取任务并创建容器
+12. 各个领取任务的NM开始执行MapTask进行分区排序
+13. MRAppMaster等待所有MapTask运行完毕后，向RM申请运行ReduceTask
+14. 程序运行完毕后，MR向RM申请注销自己，释放资源
+
+![Yarn工作机制](Hadoop.assets/Yarn工作机制.png)
+
+### Job提交流程
+
+1. 作业提交
+    1. Client 调用 job.waitForCompletion 方法，向整个集群提交 MapReduce 作业。
+    2. Client 向 RM 申请一个作业 id。
+    3. RM 给 Client 返回该 job 资源的提交路径和作业 id。
+    4. Client 提交 jar 包、切片信息和配置文件到指定的资源提交路径。
+    5. Client 提交完资源后，向 RM 申请运行 MrAppMaster。
+2. 作业初始化
+    1. 当 RM 收到 Client 的请求后，将该 job 添加到容量调度器中。
+    2. 某一个空闲的 NM 领取到该 Job。
+    3. 该 NM 创建 Container，并产生 MRAppmaster。
+    4. 下载 Client 提交的资源到本地。
+3. 任务分配
+    1. MrAppMaster 向 RM 申请运行多个 MapTask 任务资源。
+    2. RM 将运行 MapTask 任务分配给另外两个 NodeManager，另两个 NodeManager分别领取任务并创建容器。
+4. 任务运行
+    1. MR 向两个接收到任务的 NodeManager 发送程序启动脚本，这两个NodeManager 分别启动 MapTask，MapTask 对数据分区排序。
+    2. MrAppMaster等待所有MapTask运行完毕后，向RM申请容器，运行ReduceTask。
+    3. ReduceTask 向 MapTask 获取相应分区的数据。
+    4. 程序运行完毕后，MR 会向 RM 申请注销自己。
+5. 进度和状态更新
+    1. YARN 中的任务将其进度和状态(包括 counter)返回给应用管理器, 客户端每秒(通过 mapreduce.client.progressmonitor.pollinterval 设置)向应用管理器请求进度更新, 展示给用户。
+6. 作业完成
+    1. 除了向应用管理器请求作业进度外, 客户端每 5 秒都会通过调用 waitForCompletion()来 检查作业是否完成。时间间隔可以通过mapreduce.client.completion.pollinterval 来设置。作业 完成之后, 应用管理器和 Container 会清理工作状态。作业的信息会被作业历史服务器存储以备之后用户核查。
+
 ## 面试题
 
-### 为什么块大小能设置太小也不能设置太大
+### 为什么块大小不能设置太小也不能设置太大
 
 - 如果块太小，会导致文件被分成大量的块，极大增加寻址时间。
 - 如果块太大会影响磁盘传输时间
@@ -2384,6 +2461,8 @@ public List<InputSplit> getSplits(JobContext job) throws IOException {
                 - 因为后面进行reduce是key对应vlaues多个数据，需要按照key做聚合操作。如果不排序就要遍历数组找到每个key的对应的数据，当数据有序时，直接遍历一连串相同的key就行了（key不同的时候，开始聚合下一个可以）。
     3. 归并排序后整个分区内的数据就合并了。
 6. Shuffle结束执行reduce处理数据，并通过FileOutputFormat输出文件。
+
+// TODO 画图
 
 ### 如何决定ReduceTask并行度
 
