@@ -1004,6 +1004,8 @@ CombineTextInputFormat分片策略：
 
 ### Partition
 
+> 默认的Partitioner是HashPartitioner按照`key的hash值 % numberReduceTask`
+>
 > 可以自定义Partition来实现自定义分区， 其实就是根据key的分组操作
 
 **注意getPartition方法输出结果必须从0开始，以步长为1子自增**
@@ -1468,6 +1470,8 @@ public class FlowSortReducer extends Reducer<FlowBean, Text, Text, FlowBean> {
 > 例如：现在有10条id相同的记录（id, price），我们需要求price总和，完全可以再Map阶段先将数据汇总。
 >
 > Combiner其实就是Reducer，只不过Combiner实在Map运行后执行。
+>
+> 注意只有在Combiner不会影响最终结果的时候才能使用。列如求和操作现在MapTask然后在ReduceTask再执行，是不会有问题的。但是当进行平均值计算时就会出现问题（`((1 + 2) / 3) + ((3 + 4) / 2)  != (1 + 2 + 3 + 4) / 4`）
 
 Combiner做的事与Reducer事实上是一致的，因此我们直接将Reducer类设置为Combiner即可。
 
@@ -1842,13 +1846,15 @@ public class TableReducer extends Reducer<Text, TableBean, TableBean, NullWritab
 }
 ```
 
-#### MapJoin
+#### MapJoin解决小表+大表的数据倾斜问题
 
+> MapJoin可以解决小表+大表的数据倾斜问题
+>
 > 本身ReduceTask就要少于MapTask，如果现在有一个很大的文件和一个很小的文件，我们使用ReduceJoin，会导致ReduceTask压力过大。
 >
 > 可以在map阶段join利用多个MapTask提升性能，思路就是利用hadoop mapreduce提供了分布式缓存，先将小表的数据缓存，然后再map中做连表操作。
 >
-> ！！！下面的代码在我的win上报错了，但是代码真的找不出什么问题了
+> ！！！下面的代码在我的windows上报了NativeIO错误，但是代码真的找不出什么问题了（hadoop.dll库和环境变量都没问题）
 
 ```java
 public class TableMapJoinDriver {
@@ -1938,6 +1944,93 @@ public class TableJoinMapper extends Mapper<LongWritable, Text, Text, NullWritab
     }
 }
 ```
+
+### 数据压缩
+
+#### 压缩算法选择
+
+##### Gzip
+
+压缩率还行，压缩速度一般
+
+##### Bzip2
+
+压缩率很高，压缩速度极慢
+
+##### Lzo
+
+压缩率与压缩速度比较快，两者兼顾，
+
+支持切片需要创建索引，不是hadoop默认支持的加压缩方式
+
+##### Snappy
+
+压缩率不高，但是压缩速度极快。
+
+不支持切片
+
+#### 配置文件
+
+在core-site.xml中配置
+
+开启map输出压缩：`mapreduce.map.output.compress=true`
+
+指定map输出解压缩器的完全限定名：`mapreduce.map.output.compress.codec=org.apache.hadoop.io.compress.Bzip2`
+
+开启reduce输出压缩：`mapreduce.output.fileoutputformat.compress=true`
+
+指定reduce输出解压缩器的完全限定名：`mapreduce.output.fileoutputformat.compress.codec=org.apache.hadoop.io.compress.Bzip2`
+
+#### 代码配置
+
+```java
+public class WebLogDriver {
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException, URISyntaxException {
+
+        final Configuration config = new Configuration();
+
+        // 配置数据压缩
+        config.set(Job.MAP_OUTPUT_COMPRESS, "true");
+        // 使用类配置（也可以像上面一样，只不过配置的时候需要输入解码类的完全限定名）
+        // 配置map输出压缩（Reduce拉取Map数据时需要解压）
+        config.setClass(Job.MAP_OUTPUT_COMPRESS_CODEC, BZip2Codec.class, CompressionCodec.class);
+
+        final Job job = Job.getInstance(config);
+
+        // 设置driver包路径
+        job.setJarByClass(WebLogDriver.class);
+
+        // 关联mapper和reducer
+        job.setMapperClass(WebLogMapper.class);
+
+        // 设置map的kv类型
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(NullWritable.class);
+
+        // 设置最后返回的kv类型
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(NullWritable.class);
+
+        // 只需要在map阶段做数据过滤
+        job.setNumReduceTasks(0);
+
+        FileInputFormat.setInputPaths(job,
+                new Path("./web.log"));
+        FileOutputFormat.setOutputPath(job, new Path("./weblog_output"));
+
+        // 开启reduce压缩
+        FileOutputFormat.setCompressOutput(job, true);
+        FileOutputFormat.setOutputCompressorClass(job, BZip2Codec.class);
+
+        final boolean result = job.waitForCompletion(true);
+        System.exit(result ? 0 : 1);
+    }
+}
+```
+
+### 如何查看Hadoop所有配置项
+
+> 直接解压hadoop的jar包，在resource目录下有所有默认配置文件（配置文件中有对所有配置的描述）
 
 ## 面试题
 
@@ -2141,7 +2234,9 @@ DataNode在读取数据块时，会使用文件信息摘要算法，hadoop使用
 
 hadoop会为MapReduce程序分配多个MapTask运行分布在不同机器上运行。
 
-Hadoop会为每个切片分配一个MapTask进行计算。
+Hadoop yarn会为**每个切片分配一个MapTask**进行计算。
+
+为什么要切片，注意**块是存储的基本单位**，而**切片是yarn为MapTask资源调度的基本单位**。
 
 > 思考：1G 的数据，启动 8 个 MapTask，可以提高集群的并发处理能力。那么 1K 的数 据，也启动 8 个 MapTask，会提高集群性能吗？MapTask 并行任务是否越多越好呢？哪些因 素影响了 MapTask 并行度？
 
@@ -2155,22 +2250,26 @@ Hadoop会为每个切片分配一个MapTask进行计算。
 
 一个Job的MapTask数量由客户端提交Job时的切片数量决定：
 
-* 为了防止跨机器访问数据，切片大小默认与块大小相同，
+* 为了防止跨机器访问数据，切片大小默认与块大小相同。
+    * 如果块大小是128M，但是切片大小是100M就会设计跨节点数据访问了，影响性能。
+
 * hadoop为每一个切片创建一个MapTask运行
 * hadoop会单独为每一个文件进行分片，而不是数据整体。
+
+![hadoop切片机制](Hadoop.assets/hadoop切片机制-16545681165611.png)
 
 
 
 #### FileInputFormat切片源码
 
-1. 开始遍历处理（规划切片）目录下的每一个文件
-2. 遍历一个文件
-    - 计算文件大小
-    - 通过computeSplitSize函数计算分片大小，默认切片大小等于块大小
-    - 开始切片，每次切片都会判断剩下的是否>切片大小的1.1倍，只有大于才会切片。
-    - getSplits方法返回的List\<InputSplit\>中InputSplit只包含分片的元数据信息，真正的切片操作由yarn进行分片，并开启MapTask进行计算。
+> 切片是逻辑切片，并不是物理切片，用来进行MapTask的资源调度
 
-// TODO 画图
+1. 开始遍历处理（规划切片）目录下的每一个文件
+2. 遍历每个文件
+    - 计算文件大小
+    - 通过computeSplitSize函数计算切片大小，默认切片大小等于块大小
+    - 开始切片，每次切片都会判断剩下的是否>切片大小的1.1倍，只有大于才会切片
+    - getSplits方法返回的List\<InputSplit\>中InputSplit只包含分片的元数据信息
 
 ```java
 /*
@@ -2262,12 +2361,127 @@ public List<InputSplit> getSplits(JobContext job) throws IOException {
 
 ### MapReduce工作机制
 
-// TODO
+1. 客户端提交Job给yarn
+2. yarn对数据文件进行逻辑切片，**为每个切片分配MapTask**
+3. 每个MapTask通过FileInputFormat返回的RecotdReader读取hdfs集群中的当前MapTask逻辑分片的数据
+4. 调用map方法处理数据
+    - map方法处理完数据后，还可以指定Combiner，在map端先对当前MapTask分区内数据进行reduce操作（减小ReduceTask压力）。
+5. **Shuffle过程**
+    1. Map阶段
+        - Shuffle过程中会有一个**环形缓冲区**，默认100M，数据会先写入缓冲区中（写入内存提升性能）。
+            - shuffle过程可以分为：排序（sort）、溢写（spill）、合并（merge）。
+            - 为什么称为环形缓冲区？
+                - 因为一边写入数据，另一边记录数据的元数据信息，两者不是分开存储。
+            - **缓冲区中不仅存放数据，还会存放数据的元数据信息（包含数据在缓冲区中的索引等）**
+            - 缓冲区中会进行快速排序，**排序不会更改数据在缓冲区中的位置**，只会**更改元数据中的索引（减少移动数据的损耗）**。
+            - **当缓冲区占用>=80%时或者MapTask处理完毕，开始溢写，将内存中的数据写入磁盘**
+                - **溢写过程中会进行分区与快速排序（对key快排）**
+    2. Reduce阶段
+        - **Reducer根据自己的分区**，**主动**去各个MapTask机器上，**拉取**对应分区的数据并合并
+            1. Reducer只会拉取同一个分区数据，数据可能在不同的MapTask、不同的机器上
+        - **当Reducer拉取数据时会进行归并排序**保证分区内数据有序，拉取到的是每个MapTask分区内局部有序的数据，对一个局部有序的数组当然使用归并排序。
+            - 为什么要保证整个分区内数据有序？
+                - 因为后面进行reduce是key对应vlaues多个数据，需要按照key做聚合操作。如果不排序就要遍历数组找到每个key的对应的数据，当数据有序时，直接遍历一连串相同的key就行了（key不同的时候，开始聚合下一个可以）。
+    3. 归并排序后整个分区内的数据就合并了。
+6. Shuffle结束执行reduce处理数据，并通过FileOutputFormat输出文件。
 
 ### 如何决定ReduceTask并行度
 
-// TODO
+> ReduceTask的并行度同样影响计算性能
+>
+> 默认只有一个ReduceTask需要汇聚所有数据，当数据量很大时容易出现性能瓶颈，因此不建议做全排序这种操作，尽可能的分区处理数据。
 
-### MapTask & ReduceTask源码解析
+1. ReduceTask=0，表示没有Reduce阶段，输出文件个数和Map个数一致。
 
-// TODO
+2. ReduceTask默认值就是1，所以输出文件个数为一个。
+
+3. 如果数据分布不均匀，就有可能在Reduce阶段产生数据倾斜。
+
+4. ReduceTask数量并不是任意设置，还要考虑业务逻辑需求，有些情况下，需要计算全 局汇总结果，就只能有1个ReduceTask。
+
+5. 具体多少个ReduceTask，需要根据集群性能而定。
+
+6. 如果分区数不是1，但是ReduceTask为1，是否执行分区过程。答案是：不执行分区过 程。因为在MapTask的源码中，执行分区的前提是先判断ReduceNum个数是否大于1。不大于1 肯定不执行。
+
+### MapTask & ReduceTask源码流程
+
+#### MapTask
+
+1. map调用写入方法`context.write(outKey, outVal);`
+
+2. ```java
+    // MapTask#write(K key, V value)
+    @Override
+    public void write(K key, V value) throws IOException, InterruptedException {
+        // 收集数据，collect这里就会进行shuffle操作
+        collector.collect(key, value,
+                          // 获取分区器，如果没有指定分区器，默认使用HashPartitioner，key.hashCode() % numberReduceTask
+                          partitioner.getPartition(key, value, partitions));
+    }
+    ```
+
+3. ```java
+    // MapTask#closeclose(TaskAttemptContext context)
+    @Override
+    public void close(TaskAttemptContext context
+                      ) throws IOException,InterruptedException {
+      try {
+        // 当缓冲区达到80%或者MapTask数据处理完成，调用flush开始溢写
+        collector.flush();
+      } catch (ClassNotFoundException cnf) {
+        throw new IOException("can't find class ", cnf);
+      }
+      collector.close();
+    }
+    ```
+
+4. ```java
+   // MapTask中的flush方法，会调用MapTask#MapOutputBuffer#sortAndSpill进行排序和溢写
+   private void sortAndSpill() throws IOException, ClassNotFoundException,
+                                          InterruptedException {
+   		// 省略...
+           // 进行快速排序
+           sorter.sort(MapOutputBuffer.this, mstart, mend, reporter);
+           // 省略...
+   }
+   ```
+   
+5. MapTask中的flush方法执行完sortAndSpill后，mergeParts合并文件。
+
+#### ReduceTask
+
+> 懒得看了，copy一下
+
+1. ```java
+    // ReduceTask#run(JobConf job, final TaskUmbilicalProtocol umbilical)
+    public void run(JobConf job, final TaskUmbilicalProtocol umbilical)
+        throws IOException, InterruptedException, ClassNotFoundException {
+        job.setBoolean(JobContext.SKIP_RECORDS, isSkipping());
+    
+        // 如果是Reduce就会走copy sort reduce三个阶段
+        if (isMapOrReduce()) {
+          copyPhase = getProgress().addPhase("copy");
+          sortPhase  = getProgress().addPhase("sort");
+          reducePhase = getProgress().addPhase("reduce");
+        }
+        // 省略...
+    }
+    ```
+
+2. ```
+    initialize() // reduceTask333 行,进入
+    init(shuffleContext); // reduceTask375 行,走到这需要先给下面的打断点
+     totalMaps = job.getNumMapTasks(); // ShuffleSchedulerImpl 第 120 行，提前打断点
+     merger = createMergeManager(context); //合并方法，Shuffle 第 80 行
+    // MergeManagerImpl 第 232 235 行，提前打断点
+    this.inMemoryMerger = createInMemoryMerger(); //内存合并
+    this.onDiskMerger = new OnDiskMerger(this); //磁盘合并
+    rIter = shuffleConsumerPlugin.run();
+    eventFetcher.start(); //开始抓取数据，Shuffle 第 107 行，提前打断点
+    eventFetcher.shutDown(); //抓取结束，Shuffle 第 141 行，提前打断点
+    copyPhase.complete(); //copy 阶段完成，Shuffle 第 151 行
+    taskStatus.setPhase(TaskStatus.Phase.SORT); //开始排序阶段，Shuffle 第 152 行
+    sortPhase.complete(); //排序阶段完成，即将进入 reduce 阶段 reduceTask382 行
+    reduce(); //reduce 阶段调用的就是我们自定义的 reduce 方法，会被调用多次
+    cleanup(context); //reduce 完成之前，会最后调用一次 Reducer 里面的 cleanup 方法
+    ```
