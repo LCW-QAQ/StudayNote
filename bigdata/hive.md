@@ -123,6 +123,44 @@ hive-site.xml
 
 
 
-配置完成后使用`HIVE_HOME/bin/schematool -initSchema -dbType mysql -verbose`初始化元数据信息。
+配置完成后使用`HIVE_HOME/bin/schematool -initSchema -dbType mysql -verbose`初始化元数据信息。（新版本貌似初始化元数据信息后，就会自动启动metastore服务，通过`jps`查看有没有RunJar。如果没有通过`HIVE_HOME/bin/hive --service metastore`手动启动。）
 
 如果启动后报错，找不到mysql驱动，去maven上下一个mysql驱动放到`HIVE_HOME/lib`下就行了。
+
+## 客户端
+
+### Hive CLI
+
+> 第一代hive客户端
+
+```mermaid
+graph LR
+HiveCLI --> MetaStore --> Mysql
+```
+
+
+
+直接使用`HIVE_HOME/bin/hive`运行即可
+
+### Beeline
+
+> 第二代hvie客户端
+
+```mermaid
+graph LR
+Beeline --> HieveServer2 --> MetaStore --> Mysql
+```
+
+
+
+中间多了一个hiveserver2，需要启动hiveserver2才能使用，通过hiveserver2访问metastore。
+
+`HIVE_HOME/bin/hive --service hiveserver2`启动hiveserver2
+
+
+
+客户端通过`HIVE_HOME/bin/beeline`启动
+
+在客户端中使用`! connect jdbc:hive2://your_hiveserver2_host:10000`，连接hiveserver2。
+
+连接后需要输入用户名，输入一个在hdfs中有数据权限的用户名即可，密码可以跳过直接回车。
