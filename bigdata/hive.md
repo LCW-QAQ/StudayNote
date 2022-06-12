@@ -164,3 +164,217 @@ Beeline --> HieveServer2 --> MetaStore --> Mysql
 在客户端中使用`! connect jdbc:hive2://your_hiveserver2_host:10000`，连接hiveserver2。
 
 连接后需要输入用户名，输入一个在hdfs中有数据权限的用户名即可，密码可以跳过直接回车。
+
+## 常见DML
+
+> 需要使用时，直接网上搜索即可
+
+### 建库
+
+```sql
+CREATE (DATABASE|SCHEMA) [IF NOT EXISTS] database_name
+[COMMENT database_comment]
+[LOCATION hdfs_path]
+[WITH DBPROPERTIES (property_name=property_value, ...)];
+
+create database if not exists itcast
+comment "this is my first db"
+with dbproperties ('createdBy'='Allen');
+```
+
+### 建表
+
+![hive_create_table_full_syntax](hive.assets/hive_create_table_full_syntax.png)
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db_name.]table_name
+(col_name data_type [COMMENT col_comment], ... )
+[COMMENT table_comment]
+[ROW FORMAT DELIMITED …];
+```
+
+row format delimited所有选项
+
+```sql
+row format delimited
+	# 每行数据字段的分隔符
+	[fields terminated by char]
+	# 集合元素的分隔符，例如1,张三,a=1-b=2-c=3其中-就是集合分隔符
+    [collection items terminated by char]
+	# map元素的分隔符，例如1,张三,a=1-b=2-c=3其中=就是集合分隔符
+    [map keys terminated by char]
+    # 标识一行数据结束的分隔符，默认\n
+    [lines terminated by char]
+```
+
+### 视图与物化视图
+
+```sql
+# 创建视图
+create view v_user_transaction_all as
+select *
+from user_info_transaction;
+
+# 创建物化视图
+create materialized view user_info_transaction_agg_mview
+as
+select name, count(*)
+from user_info_transaction
+group by name;
+```
+
+## 分区
+
+> 通过指定分区字段，将数据文件按字段分区，hdfs上以为`分区字段名=字段值`的形式组织数据。
+>
+> 分区可以提升性能，在进行where条件时，由于hive对索引支持有限，默认情况下只能走全表扫描，性能极低。当进行表分区后，对分区字段的条件过滤，不会全表扫描，只会扫描该分区内的数据。
+
+注意事项：
+
+* **分区字段与表字段不能重名**
+* **分区表需要自己加入数据（加载数据可以手动分区或自动分区）**
+
+```sql
+create table hero
+(
+    id   int,
+    name string,
+    role string
+) partitioned by (role_ext string)
+    row format delimited fields terminated by ",";
+```
+
+多重分区
+
+可以指定多个分区字段，注意顺序，hive会按照分区字段的顺序，优先按靠前的字段分区。
+
+```sql
+create table user_info_dy_part
+(
+    id       int,
+    name     string,
+    province string,
+    city     string
+) partitioned by (province_ext string, city_ext string)
+    row format delimited fields terminated by ",";
+```
+
+分区表需要使用`load data`语法加入数据：
+
+手动分区
+
+
+```sql
+load data inpath "/user/hive/warehouse/test.db/hero/tank.txt" into table hero partition (role_ext = "tank");
+```
+
+自动分区
+
+```sql
+# 开启自动分区
+set hive.exec.dynamic.partition = true;
+# 关闭严格模式（必须至少有一个静态分区）
+set hive.exec.dynamic.partition.mode = nostrict;
+
+# 全量数据表
+create table user_info
+(
+    id       int,
+    name     string,
+    province string,
+    city     string
+) row format delimited fields terminated by ",";
+
+# 分区表
+create table user_info_dy_part
+(
+    id       int,
+    name     string,
+    province string,
+    city     string
+) partitioned by (province_ext string, city_ext string)
+    row format delimited fields terminated by ",";
+
+
+# 动态分区需要从已有数据表中导入数据
+insert into table user_info_dy_part partition (province_ext, city_ext)
+select t.*, t.province, t.city
+from user_info t;
+```
+
+## 分桶
+
+> 分桶与分区操作类似，可以将分桶理解为以指定字段的hash散列方式分区。（类似于mysql hash索引）
+>
+> 分桶操作会通过指定字段的hash值取模桶数量，得到的记过就是分区表所在的文件（例如取模结果为0，那么就在第一个文件中）。这与MapReduce中的分区操作类似。
+>
+> 分桶操作也可以提升查询性能，在查询的过滤条件是分桶字段时，直接走对应的分桶文件，而不需要全表扫描。同时在join操作时，如果两边的字段都是分桶字段，那么只会走两个桶的笛卡尔积，不会走全量数据。
+
+```sql
+create table user_info_without_bucket
+(
+    id   int,
+    name string,
+    age  int
+) row format delimited fields terminated by ",";
+
+create table user_info_bucket
+(
+    id   int,
+    name string,
+    age  int
+    # 指定分桶字段与桶数量
+) clustered by (id) into 5 buckets;
+
+# 分桶也需要手动加载数据，但是使用的是insert into table as select方式
+insert into user_info_bucket
+select *
+from user_info_without_bucket;
+```
+
+## 事务表
+
+> hive一开始并不支持事务，后来由于flume、spark、kafka工具组件将数据流高速传输到hdfs上。高速传输和分区会给NameNode带来压力，因此使用这些数据流工具将数据传输到已有的分区中。但是可能会造成脏读（数据传输一般失败，回滚）。需要通过事务让用户获取一致性的数据，避免产生太多小文件。
+>
+> Hive 在设计之初时，是不支持事务操作的，因为 Hive 的核心目标是将已存在的结构化数据文件映射成表，然后提供基于表的SQL分析处理；是一款面向分析的工具。且映射的文件存在 HDFS 中，其本身也不支持随机修改文件的数据。这个定位就意味着早期的 HQL 本身就不支持 update、delete 语法，也就没有所谓的事务支持。
+>
+> hive0.14版本开始支持事务，但是想使用事务操作仍然还有许多限制。
+
+最终 Hive 支持了具有 ACID 语义的事务，但做不到和传统关系型数据库那样的事务级别，仍有很多局限如：
+
+1. 不支持 begin、commit、rollback，所有操作自动提交
+2. 仅支持 orc 文件格式
+3. 默认事务关闭，需要额外配置
+4. 表参数 transactional 必须为 true
+5. 外部表不能成为 ACID 表，不允许从非 ACID 会话读取/写入 ACID 表
+
+```sql
+# 使用事务需要开启的配置（事务操作只支持分通表），set配置是临时的，在hive-site.xml中配置全局持久生效。
+set hive.support.concurrency = true;
+set hive.enforce.bucketing = true;
+set hive.exec.dynamic.partition.mode = nostrict;
+set hive.txn.manager = org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
+set hive.compactor.initiator.on = true;
+set hive.compactor.worker.threads = 1;
+
+create table user_info_transaction
+(
+    id   int,
+    name string,
+    age  int
+) clustered by (id) into 5 buckets stored as orc tblproperties ("transactional" = "true");
+
+select *
+from user_info_transaction;
+
+# hdfs不支持更改操作（可以追加），hive的删改操作本质上是重新写入删改后的所有数据
+update user_info_transaction
+set age = 18
+where id = 1;
+
+delete user_info_transaction
+where id = 6;
+```
+
+
+
