@@ -701,7 +701,7 @@ doCreateBean[doCreateBean<br>具体创建bean的方法] --> createBeanInstance[c
 	--> addSingletonFactory[addSingletonFactory<br>如果支持暴露早期引用, 就会调用该方法, 将实例化但是还未填充属性和初始化的Bean暴露到singletonFactories中, 以便在依赖循环处理AOP]
 	--> populateBean[populateBean<br>填充bean属性<br>如果有依赖的bean就回去先创建依赖的bean走同样的流程<br>如果出现依赖循环, 详见Spring如何解决依赖循环]
 	--> initializeBean[initializeBean]
-	--> earlySingletonExposure[这里还会有一个判断, 如果允许暴露早期对象那么会再次getSingleton当前bean, 获取出来的不是空, 说明出现了循环依赖<br>当前bean还没加入到容器中, 是依赖循环导致, 当前bean提前创建<br>spring会在这里检查是否是可以处理的依赖循环, 如果不可处理会抛出BeanCurrentlyInCreationException异常]
+	--> earlySingletonExposure[这里还会有一个判断, 如果允许暴露早期对象那么会再次getSingleton当前bean, 获取出来的不是空, 说明出现了循环依赖<br>当前bean还没加入到容器中, 是依赖循环导致, 当前bean提前创建<br>spring会在这里检查是否是可以处理的依赖循环, 如果不可处理bean初始化完成之后<br>后面还有一步去检查: 第二级缓存和原始对象是否相等<br>如果不相等会抛出BeanCurrentlyInCreationException异常]
 	--> registerDisposableBeanIfNecessary[registerDisposableBeanIfNecessary<br>如果bean实现了DisposableBean那么会注册DisposableBean, DestructionCallback]
 	
 initializeBean__INFO(初始化bean, 涉及Aware, BeanPostProcessor的调用) --> initializeBean
