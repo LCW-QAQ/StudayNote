@@ -351,10 +351,14 @@ from user_info_without_bucket;
 ```sql
 # 使用事务需要开启的配置（事务操作只支持分通表），set配置是临时的，在hive-site.xml中配置全局持久生效。
 set hive.support.concurrency = true;
+# hive3.0默认开启，之前的版本需要手动开启
 set hive.enforce.bucketing = true;
 set hive.exec.dynamic.partition.mode = nostrict;
+# 指定事务管理器
 set hive.txn.manager = org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
+# 是否在Meatastore对delta文件进行压缩合并
 set hive.compactor.initiator.on = true;
+# 压缩合并的工作线程数
 set hive.compactor.worker.threads = 1;
 
 create table user_info_transaction
