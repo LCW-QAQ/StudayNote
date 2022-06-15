@@ -711,6 +711,7 @@ group by month, day;
 ```sql
 -- cube根据指定分组字段全维度分析, 结果是2的n次方, n表示维度数量, 下面的例子就是根据（month, day）两个维度（两个字段分组）
 -- a,b --> (a) (b) (a,b) ()
+-- ()相当于汇总所有
 select month, day, count(distinct cookieid) cnt, GROUPING__ID
 from cookies_info
 group by month, day
