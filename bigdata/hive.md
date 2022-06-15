@@ -244,7 +244,7 @@ create table hero
     row format delimited fields terminated by ",";
 ```
 
-多重分区
+### 多重分区
 
 可以指定多个分区字段，注意顺序，hive会按照分区字段的顺序，优先按靠前的字段分区。
 
@@ -261,14 +261,14 @@ create table user_info_dy_part
 
 分区表需要使用`load data`语法加入数据：
 
-手动分区
+### 手动分区
 
 
 ```sql
 load data inpath "/user/hive/warehouse/test.db/hero/tank.txt" into table hero partition (role_ext = "tank");
 ```
 
-自动分区
+### 自动分区
 
 ```sql
 # 开启自动分区
@@ -380,5 +380,366 @@ delete user_info_transaction
 where id = 6;
 ```
 
+## 导出数据
 
+```sql
+-- 注意overwrite语法表示直接情况目标文件夹并写入数据, 使用时一定要注意(默认是hdfs上，使用local存储到hiveserver2上)
+insert overwrite directory "/tmp/hive_export/1"
+select id, name, province_ext
+From user_with_province_part;
+```
 
+## 视图
+
+### 虚拟视图
+
+```sql
+create view jt_usr_covid19_alabama as
+select *
+from t_usa_covid19_part
+where state = "Alabama"
+order by deaths desc;
+```
+
+### 物化视图
+
+```sql
+create materialized view jt_usr_covid19_alabama as
+select *
+from t_usa_covid19_part
+where state = "Alabama"
+order by deaths desc;
+```
+
+## 排序
+
+### order by
+
+```sql
+select *
+from students
+order by sex;
+```
+
+### cluster by
+
+>根据指定字段分区（类似partition）同时根据该字段排序（默认升序，无法指定升序、逆序）
+
+```sql
+select *
+from students cluster by num;
+-- 上面语句等同于:
+-- select * from students distributed by num sort by num;
+```
+
+### distributed by srot by
+
+> 根据distributed by的字段分区（类似partition），同时根据sort by字段排序（默认升序，可以指定升序、逆序）
+
+```sql
+select *
+from students distribute by sex sort by age;
+-- 上面的语句可以类比partition返回结果类似:
+/*
+select name,
+       age,
+       sex,
+       rank() over (partition by sex order by age)
+from students;
+*/
+```
+
+## hive函数
+
+> 这里只列举常用函数与hive独有特殊函数，多数函数与mysql保持一致
+
+### 常用函数
+
+```sql
+-- 运算符与函数
+select 1 + 1;
+
+select *
+from students
+where name like "李%";
+
+select *
+from students
+where name rlike "^李.$";
+
+select *
+from students
+where name regexp "^李.$";
+
+select 17 / 3;
+select 17 div 3;
+select 17 % 3;
+select 17 & 3;
+select 17 | 3;
+select 17 ^ 3;
+
+select concat("A", "B", "C");
+select "A" || "B" || "C";
+
+select array(1, 2, "hello");
+select map("hello", 1, "world", 2);
+select struct("name", "age");
+select named_struct("hello", 1, "world", 2);
+select create_union(0, "uu", array(1, 2, 3), "aa");
+
+-- 常用函数
+-- 字符串函数
+-- 拼接
+select concat("A", "B");
+-- 拼接多个值，自动拆包数组
+select concat_ws(",", "hello", "world", array("P", 2));
+-- 截取从倒数第4位开始截取到最后
+select substr("hello world", -4);
+-- 正则替换所有满足条件的值
+select regexp_replace("100-200", "(\\d+)", "num");
+-- 提取匹配到的内容
+select regexp_extract("100-200", "(\\d+)-(\\d+)", 2);
+-- URL解析函数：从URL解析出host地址
+select parse_url("http://www.itcast.cn/path/p1.php?query=1", "HOST");
+-- URL解析函数：从URL中解析出多个参数以数组形式返回
+select parse_url_tuple("http://www.itcast.cn/path/p1.php?query=1&city=wuhan", "HOST", "PATH", "QUERY", "QUERY:city");
+-- 分割字符串（支持正则）
+select split("apache hive", "\\s+");
+-- select get_splits("apache hive", 1); -- 没搞懂怎么用
+-- 解析json，通过指定占位符获取内容
+select get_json_object('[{"name": "ZhangSan", "age": "12"},{"name": "ZhangSan", "age": "20"}]', '$.[1]');
+
+-- 获取字符串长度
+select length("hello");
+-- 反转字符串
+select reverse("olleh");
+
+-- 全大写
+select upper("city");
+select ucase("city");
+-- 全小写
+select lower("City");
+select lcase("City");
+
+-- 查找字符串是否出现在后面的字符串中（默认字符串按`,`分割）, 如果有返回是第几个元素, 不存在返回0
+-- 不能用于查找array等结构，查找array请使用array_contains, map[key]如果key不存在返回null
+select find_in_set("aaaa", "abc,defg,a");
+select find_in_set("a", concat_ws(",", array("A", "a", "cd")));
+select array_contains(array(1, 2, 3, "a"), "a");
+select map("name", "ZhangSan")["Name"] is null;
+
+-- 时间戳系列
+select unix_timestamp();
+select datediff("2022-6-14", "2022-6-16");
+
+-- 条件判断
+select if(null is null, "NULL", "NOT NULL");
+select case 100 when 50 then "TOM" when "100" then "TOM100" else "TIM" end;
+
+-- 数据脱敏
+select mask("helloWORLD");
+select mask_last_n("helloWORLD");
+select mask_show_first_n("15388883445", 3);
+select mask_hash("15388883445", 3);
+```
+
+### 调用Java方法
+
+> hive支持通过反射调用第三方库中的函数
+
+```sql
+-- 如果想使用第三方类库，请使用add jar添加
+select java_method("java.lang.Math", "max", 10, 20);
+select reflect("java.lang.Math", "max", 10, 20);
+```
+
+### 列转行
+
+```sql
+-- 列转行
+-- 不会将数组中的元素拿出来，而是将数组视为一个整体
+select collect_list(array(1, 2, 3, 3));
+select collect_set(array(1, 2, 2, 2, 2));
+-- 将sex字段收集成一行
+select collect_list(sex)
+from students;
+select collect_set(sex)
+from students;
+```
+
+### 行转列
+
+```sql
+-- explode函数使用，列转行
+select explode(array(11, 22, 33));
+
+/*
+A,1000|2000|3000
+B,2222|3333|4444
+*/
+create table nba
+(
+    team_name  string,
+    good_years array<string>
+) row format delimited fields terminated by ","
+    collection items terminated by "|";
+
+load data local inpath "/root/hive_data_samples/nba.txt"
+    into table nba;
+
+select *
+from nba;
+
+select explode(good_years)
+from nba;
+
+-- 这个sql运行会报错，无法自动映射航专列后的其他字段
+select team_name, explode(good_years)
+from nba;
+-- 可以先保存所有年份信息，然后join插叙出结果
+with years as (select explode(good_years) year
+               from nba)
+select n.team_name, y.year
+from nba n
+         join years y
+where array_contains(n.good_years, y.year);
+
+-- hive提供了lateral view侧视图，自动实现join
+-- 并且不需要查多次表吗，底层缓存了每列对应的其他字段，性能更好
+select team_name, b.year
+from nba
+         lateral view explode(good_years) b as year;
+
+-- 返回每个球队获奖次数并根据获奖次数降序排列
+select team_name, count(*) nums
+from nba
+         lateral view explode(good_years) b as year
+group by team_name
+order by nums desc;
+```
+
+### 增强聚合函数
+
+> grouping_sets、cube、rollup三个增强聚合功能类似，提供了更简单的语法实现多维度分析（就是分组查询，但是能自动查询出站在不同的字段角度分析的结果），同时相比多次查询union all汇聚结果性能更高。
+
+#### grouping_sets
+
+> 根据指定字段（维度）进行多维度分析
+>
+> 列如：
+>
+> ```sql
+> select month,
+>        day,
+>        count(distinct cookieid)
+> from cookies_info
+> group by month, day
+>     grouping sets ( month, day);
+> -- 表示根据month与day分组，最后返回的结果分别是group by month与group by day的结果
+> ```
+
+```sql
+-- 增强聚合函数
+-- 一下的增强聚合函数都是只针对group by的字段, 在不同维度(字段)上分析, 最后将结果聚合为一张表
+/*
+2018-3,2018-3-9,c1                                                           
+2018-3,2018-3-6,c1
+2018-3,2018-3-14,c1
+2018-4,2018-4-13,c1
+2018-4,2018-4-4,c1
+*/
+create table cookies_info
+(
+    month    string,
+    day      string,
+    cookieid string
+) row format delimited fields terminated by ",";
+
+load data local inpath "/root/hive_data_samples/cookie_info.txt"
+    into table cookies_info;
+
+select *
+from cookies_info;
+
+select month,
+       day,
+       count(distinct cookieid)
+from cookies_info
+group by month, day;
+
+-- 根据(month, day)分组, 并在month和day两个维度分析
+select month,
+       day,
+       count(distinct cookieid)
+from cookies_info
+group by month, day
+    grouping sets ( month, day);
+-- 上面语句等价于下面的语句
+select month, null, count(distinct cookieid)
+from cookies_info
+group by month
+union all
+select null, day, count(distinct cookieid)
+from cookies_info
+group by day;
+
+-- 根据(month, day)分组, 并在month和day和(month, day)三个维度分析
+select month,
+       day,
+       count(distinct cookieid)
+from cookies_info
+group by month, day
+    grouping sets ( month, day, ( month, day));
+-- 上面语句等价于下面的语句
+select month, null, count(distinct cookieid)
+from cookies_info
+group by month
+union all
+select null, day, count(distinct cookieid)
+from cookies_info
+group by day
+union all
+select month, day, count(distinct cookieid)
+from cookies_info
+group by month, day;
+```
+
+#### cube
+
+> GROUPING__ID是使用增强聚合函数时，hive自动生成的字段，用于区分维度（不同的组）
+
+```sql
+-- cube根据指定分组字段全维度分析, 结果是2的n次方, n表示维度数量, 下面的例子就是根据（month, day）两个维度（两个字段分组）
+-- a,b --> (a) (b) (a,b) ()
+select month, day, count(distinct cookieid) cnt, GROUPING__ID
+from cookies_info
+group by month, day
+with cube;
+-- 等价于以下sql
+select month, day, count(distinct cookieid) cnt
+from cookies_info
+union
+select month, day, count(distinct cookieid) cnt
+from cookies_info
+group by month
+union
+select month, day, count(distinct cookieid) cnt
+from cookies_info
+group by day
+union
+select month, day, count(distinct cookieid) cnt
+from cookies_info
+group by month, day;
+```
+
+#### rollup
+
+```sql
+-- rollup以最左侧维度为主进行层级聚合
+-- a,b,c -> (a) (a,b) (a,b,c) () 四种情况, 有mysql索引最左匹配内味儿了
+select month, day, count(distinct cookieid) cnt, GROUPING__ID
+from cookies_info
+group by month, day
+with rollup
+order by GROUPING__ID;
+```
