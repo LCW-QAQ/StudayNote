@@ -884,6 +884,7 @@ os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3
 import os
 """
 -mapper与-reducer中可以直击使用命令的方式这样就不需要将脚本设置为可执行，也不需要在脚本上指定解释器，注意解释器路径需要决定路径，或者使用环境变量
+如果不需要mapper或者reducer阶段，指定-mapper/reducer None即可或者指定map task或reducer task数量为0
 """
 os.system("""hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.3.3.jar \
 -mapper "$PYTHON_HOME/bin/python3 ./mapper.py" \

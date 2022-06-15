@@ -553,10 +553,10 @@ select java_method("java.lang.Math", "max", 10, 20);
 select reflect("java.lang.Math", "max", 10, 20);
 ```
 
-### 列转行
+### collect_list/collect_set
 
 ```sql
--- 列转行
+-- 多行转单列(这里的行是array里的假数据)
 -- 不会将数组中的元素拿出来，而是将数组视为一个整体
 select collect_list(array(1, 2, 3, 3));
 select collect_set(array(1, 2, 2, 2, 2));
@@ -567,10 +567,10 @@ select collect_set(sex)
 from students;
 ```
 
-### 行转列
+### explode
 
 ```sql
--- explode函数使用，列转行
+-- explode函数使用，多列转单行
 select explode(array(11, 22, 33));
 
 /*
