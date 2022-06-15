@@ -618,6 +618,74 @@ group by team_name
 order by nums desc;
 ```
 
+### 抽样函数
+
+```sql
+--------------------------
+-- 抽样函数
+select *
+from t_usa_covid19_part;
+
+-- 基于随机排序的随机采样
+-- 优点随机性高，缺点性能低
+select *
+from t_usa_covid19_part
+    distribute by rand() sort by rand()
+limit 2;
+
+select *
+from t_usa_covid19_part
+order by rand()
+limit 2;
+
+-- 块采样
+-- 优点性能高，缺点随机性低
+-- 随机获取1行的数据
+select *
+from t_usa_covid19_part
+         tablesample (1 rows);
+-- 随机获取50%的数据
+select *
+from t_usa_covid19_part
+         tablesample (50 percent);
+-- 随机获取1kb的数据
+select *
+from t_usa_covid19_part
+         tablesample (1k);
+
+
+-- 基于分桶抽样
+-- 性能与随机性兼顾
+create table t_usa_covid19_bucket
+(
+    `count_date` string,
+    `county`     string,
+    `state`      string,
+    `fips`       int,
+    `cases`      int,
+    `deaths`     int
+) clustered by (state) into 5 buckets
+    row format delimited fields terminated by ",";
+
+insert into t_usa_covid19_bucket
+select *
+from t_usa_covid19;
+
+select *
+From t_usa_covid19_bucket;
+
+-- 抽取5/5个桶的数据，从第一个桶开始抽取
+select *
+from t_usa_covid19_bucket
+         tablesample (bucket 1 out of 5 on rand());
+
+-- tablesample (bucket x out of y [on column])
+-- x表示从第几个桶开始抽样, y=2时, 总桶数是5时, 会抽取 5 / 2个桶的数据, 以on指定的字段为key hash后得到结果
+select *
+from t_usa_covid19_bucket
+         tablesample (bucket 1 out of 3 on state);
+```
+
 ### 增强聚合函数
 
 > grouping_sets、cube、rollup三个增强聚合功能类似，提供了更简单的语法实现多维度分析（就是分组查询，但是能自动查询出站在不同的字段角度分析的结果），同时相比多次查询union all汇聚结果性能更高。
