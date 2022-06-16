@@ -103,3 +103,7 @@ SELECT * from user where  name like '陈%' and age=20
 ```sql
 set optimizer_switch='index_condition_pushdown=off';
 ```
+
+## 总结
+
+一句话概括：`索引覆盖（只查询索引列）、最左匹配（联合索引必须从左开始一次匹配）、索引下推（在有联合索引时，自动优化减少回表次数（本质就是提前过滤了联合索引中的字段，不需要一个一个匹配然后回表））`
