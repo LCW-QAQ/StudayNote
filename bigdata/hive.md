@@ -812,3 +812,312 @@ group by month, day
 with rollup
 order by GROUPING__ID;
 ```
+
+## hive技巧
+
+### url解析
+
+```sql
+select parse_url("http://www.baidu.com/q?wd=python", "HOST");
+select parse_url_tuple("http://www.baidu.com/q?wd=python", "PROTOCOL", "HOST", "PATH", "QUERY");
+
+-- parse_url_tuple是一个udtf函数，只不过返回的是一行，但是返回的仍然是虚拟表，需要配置侧视图使用
+with t0 as (select explode(array(named_struct("id", "1", "url", "http://www.baidu.com/q?wd=python"),
+                                 named_struct("id", "2", "url", "http://www.baidu.com/q?wd=python"))) as item),
+     t as (select item.id, item.url
+           from t0)
+select id, url_info.protocol, url_info.host, url_info.path, url_info.query
+from t lateral view parse_url_tuple(t.url, "PROTOCOL", "HOST", "PATH", "QUERY") url_info
+         as protocol, host, path, query;
+
+-- udtf函数返回的是空时，关联的结果也是空，需要使用outer保留原来表的数据
+with t0 as (select explode(array(named_struct("id", "1", "url", "http://www.baidu.com/q?wd=python"),
+                                 named_struct("id", "2", "url", "http://www.baidu.com/q?wd=python"))) as item),
+     t as (select item.id, item.url
+           from t0)
+select t.*, p.*
+from t
+         lateral view explode(array()) p;
+
+with t0 as (select explode(array(named_struct("id", "1", "url", "http://www.baidu.com/q?wd=python"),
+                                 named_struct("id", "2", "url", "http://www.baidu.com/q?wd=python"))) as item),
+     t as (select item.id, item.url
+           from t0)
+select t.*, p.*
+from t
+         lateral view outer explode(array()) p;
+```
+
+### 复杂分隔符处理
+
+> row format delimited fileds terminated by 只能使用单字节字符，如果想使用多字节字符需要使用其他SerDe或自定义SerDe实现。
+>
+> 接下来以一下数据举例：
+>
+> 周杰伦||七里香
+>
+> 周杰伦||暗号
+
+`||`是双字符delimited无法处理
+
+#### RegexSerde
+
+> hive提供了正则的方式匹配字段
+>
+> 这里需要使用正则()组匹配来匹配每个字段（并不是将匹配到的内容视为分隔符）
+
+```sql
+-- 通过RegexSerDe正则表达式分割文件
+create table singer
+(
+    name string,
+    song string ) row format serde "org.apache.hadoop.hive.serde2.RegexSerDe"
+    with serdeproperties (
+        "input.regex" = "(.*)\\|\\|(.*)"
+        );
+drop table singer;
+
+load data local inpath "/root/hive_data_samples/singer.txt"
+    into table singer;
+
+select *
+from singer;
+```
+
+#### MR程序处理
+
+> 我们直接通过mr程序并发清洗数据
+
+以hadoop streaming为例
+
+mapper
+
+```python
+#!/opt/python3/bin/python3
+import sys
+
+for line in sys.stdin:
+    k, v = line.split("||")
+    print(f"{k} {v}")
+```
+
+这里不需要reduce（但是mr处理的结果有空行不知道为什么？）
+
+启动脚本
+
+```python
+#!/bin/env python3
+import os
+
+os.system("""mapred streaming -files ./singer_mapper.py \
+-mapper ./singer_mapper.py \
+-reducer None \
+-input /itheima/singer.txt \
+-output /itheima/singer_format
+""")
+```
+
+#### 自定InputFormat
+
+这里需要使用java程序，很麻烦不建议使用（使用场景少），就不做演示了，只说一下流程。
+
+将自定义的InputFormat打成jar包，在hive中通过`add jar`添加。
+
+然后建表时指定inputformat即可：
+
+```sql
+create table singer
+(
+    name string,
+    song string ) row format delimited fields terminated by "|"
+stored as 
+inputformat "完全限定名"
+outputformat "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat";
+```
+
+### 行列转换
+
+```sql
+/*
+张三,数学,20
+张三,英语,30
+张三,语文,60
+显康,数学,100
+显康,语文,20
+显康,英语,80
+ */
+create table stu_score
+(
+    name    string,
+    subject string,
+    score   int
+) row format delimited fields terminated by ",";
+
+load data local inpath "/root/hive_data_samples/stu_score.txt"
+    into table stu_score;
+
+select *
+from stu_score;
+
+-- 多行转多列
+select name,
+       max(if(subject = "数学", score, 0)) as `数学`,
+       max(if(subject = "语文", score, 0)) as `语文`,
+       max(if(subject = "英语", score, 0)) as `英语`
+from stu_score
+group by name;
+
+-- 多行转单列
+select name,
+       concat_ws(",", collect_list(subject)),
+       concat_ws(",", collect_list(cast(score as string)))
+from stu_score
+group by name;
+
+-- 多列转多行
+/*
+张三,10,20,30
+显康,100,30,60
+ */
+create table stu_score_all
+(
+    name    string,
+    math    int,
+    chinese int,
+    english int
+) row format delimited fields terminated by ",";
+
+load data local inpath "/root/hive_data_samples/stu_score_all.txt"
+    into table stu_score_all;
+
+select *
+from stu_score_all;
+
+select name, "数学" as `科目`, math
+from stu_score_all
+union
+select name, "语文" as `科目`, chinese
+from stu_score_all
+union
+select name, "英语" as `科目`, english
+from stu_score_all;
+
+-- 单列转多行
+with tb0 as (select explode(array(
+        named_struct("name", "张三", "math", "数学", "scores", "10,20,30"),
+        named_struct("name", "显康", "math", "数学", "scores", "100,60,80")
+    )) as item),
+     tb as (select item.name name, item.math math, item.scores scores
+            from tb0)
+select name, math, lv.score
+from tb lateral view explode(split(scores, ",")) lv as score;
+```
+
+### 窗口函数案例
+
+#### 连续登录问题
+
+```sql
+/*
+1,2022-6-13
+1,2022-6-14
+1,2022-6-15
+1,2022-6-16
+2,2022-6-16
+2,2022-6-17
+2,2022-6-11
+2,2022-6-18
+*/
+create table user_login
+(
+    user_id    string,
+    login_time string
+) row format delimited fields terminated by ",";
+
+load data local inpath '/root/hive_data_samples/user_login.txt'
+    into table user_login;
+
+select *
+from user_login;
+
+------------------ 连续登录2天的用户
+-- 笛卡尔积实现（性能极低，并且如果求连续登录N天就需要N张表的笛卡尔积）
+with q1 as (select a.user_id    a_uid,
+                   a.login_time a_time,
+                   b.user_id    b_uid,
+                   b.login_time b_time
+            from user_login a,
+                 user_login b)
+select distinct q1.a_uid
+from q1
+where q1.a_uid = q1.b_uid
+  and day(q1.a_time) - 1 = day(q1.b_time);
+
+-- 使用窗口函数实现(lead函数取不到的时候返回null，记得给个默认值)
+with q1 as (select user_id,
+                   login_time,
+                   date_add(login_time, 1)                                                   next_day,
+                   lead(login_time, 1, 0) over (partition by user_id order by login_time) as next_time
+            from user_login)
+select distinct user_id
+from q1
+where q1.next_day = q1.next_time;
+```
+
+#### 累计求和
+
+```sql
+------------------ 累计求和问题
+create table money_month
+(
+    user_id string,
+    month   string,
+    money   int
+) row format delimited fields terminated by ",";
+drop table money_month;
+
+load data local inpath "/root/hive_data_samples/money_month.txt"
+    into table money_month;
+
+select *
+from money_month;
+
+-- 求每个月的总消费与累计消费 笛卡尔积实现
+with user_month as (select user_id, month, sum(money) m_money
+                    from money_month
+                    group by user_id, month)
+select a.user_id, a.month, max(a.m_money) as `当月总消费`, sum(b.m_money) as `累计消费`
+from user_month a
+         join user_month b on a.user_id = b.user_id
+where a.month >= b.month
+group by a.user_id, a.month;
+
+-- 求每个月的总消费与累计消费 窗口函数
+with user_month as (select user_id,
+                           month,
+                           sum(money) m_money
+                    from money_month
+                    group by user_id, month)
+select user_id,
+       month,
+       m_money,
+       sum(m_money) over (order by month) as `累计消费`
+from user_month;
+```
+
+#### 分组TopN问题
+
+```sql
+------------------ 分组TopN问题
+-- 各部门前薪水最高的前两名
+with q as (select id,
+                  name,
+                  deg,
+                  salary,
+                  dept,
+                  rank() over (partition by dept order by salary desc) rk
+           from employee)
+select *
+from q
+where q.rk <= 2;
+```
