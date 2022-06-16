@@ -309,8 +309,16 @@ from user_info t;
 > 分桶操作会通过指定字段的hash值取模桶数量，得到的记过就是分区表所在的文件（例如取模结果为0，那么就在第一个文件中）。这与MapReduce中的分区操作类似。
 >
 > 分桶操作也可以提升查询性能，在查询的过滤条件是分桶字段时，直接走对应的分桶文件，而不需要全表扫描。同时在join操作时，如果两边的字段都是分桶字段，那么只会走两个桶的笛卡尔积，不会走全量数据。
+>
+> 数据竟可能分桶且排序，查询和基于分桶的随机抽样时，性能会更高。
 
 ```sql
+# 开启基于桶的mapjoin
+set hive.optimize.bucketmapjoin=true;
+set hive.auto.convert.sortmerge.join=true;
+# 开开启SMB(Sort-Merge-Bucket) Join优化，先排序再合并全部在map端完成，避免大量数据到reduce端造成数据倾斜，减少shuffle的数据量
+set hive.optimize.bucketmapjoin.sortedmerge=true;
+
 create table user_info_without_bucket
 (
     id   int,
@@ -323,8 +331,8 @@ create table user_info_bucket
     id   int,
     name string,
     age  int
-    # 指定分桶字段与桶数量
-) clustered by (id) into 5 buckets;
+    # 指定分桶字段、分桶排序字段、桶数量
+) clustered by (id) sorted by (age asc) into 5 buckets;
 
 # 分桶也需要手动加载数据，但是使用的是insert into table as select方式
 insert into user_info_bucket
@@ -1120,4 +1128,322 @@ with q as (select id,
 select *
 from q
 where q.rk <= 2;
+```
+
+### 拉链表
+
+> 当数据量巨大，并且每天都可能发生变化时，我们可以采取获取增量数据的方式，只需要将增量数据与历史数据合并。
+>
+> 具体操作：表中添加两个字段start_date与end_date，分别表示该状态的起始日期和该状态的结束日期。默认情况下end_date是`9999-12-31`给一个最大值，表示状态有效。
+>
+> 当数据更新时，我们不要删除历史数据，而是添加增量数据，将start_date更改为新的时间即可。
+>
+> 将增量数据添加到hive的delta_temp增量临时表中，join历史数据表与增量数据表，当历史数据表的唯一标识与增量数据表的唯一标识相同时，说明该唯一标识的数据发生了更改。此时将旧数据的end_date改为当前时间的前一天，新数据的end_date默认为`9999-12-31`即可。
+
+```sql
+-- 用户地址信息表
+create table user_addr_info
+(
+    id         int,
+    name       string,
+    addr       string,
+    start_date string,
+    end_date   string
+) row format delimited fields terminated by ",";
+drop table user_addr_info;
+
+load data local inpath "/root/hive_data_samples/user_addr_info.txt"
+    into table user_addr_info;
+
+select *
+from user_addr_info;
+
+-- 模拟增量数据
+-- 增量数据通过start_date=current_date()获取当天的新数据即是增量数据源
+create table user_addr_info_delta_temp
+(
+    id         int,
+    name       string,
+    addr       string,
+    start_date string,
+    end_date   string
+) row format delimited fields terminated by ",";
+drop table user_addr_info_delta_temp;
+
+load data local inpath "/root/hive_data_samples/user_addr_info_delta_temp.txt"
+    into table user_addr_info_delta_temp;
+
+select *
+from user_addr_info_delta_temp;
+
+-- 将增量数据存储与历史数据合并到临时表
+create table user_addr_info_new_temp
+as
+select id, name, addr, start_date, end_date
+from user_addr_info_delta_temp
+union all
+select old_tb.id,
+       old_tb.name,
+       old_tb.addr,
+       old_tb.start_date,
+    /*
+    delta_tb.id is null 表示delta表中没有对应的数据，即该用户没有更新地址信息
+
+    delta_tb.id is not null时，并不是没条对应id的数据都要更新
+    我们只需要更新日期是9999-12-31的最新数据变成`delta_tb.start_date - 1`即可(该状态持续到昨天)
+     */
+       if(delta_tb.id is null or old_tb.end_date < '9999-12-31', old_tb.end_date,
+          date_sub(delta_tb.start_date, 1)) as end_date
+from user_addr_info old_tb
+-- 记得使用left join，必须保存左边即旧表的历史数据
+         left join user_addr_info_delta_temp delta_tb on old_tb.id = delta_tb.id;
+
+select *
+from user_addr_info_new_temp;
+
+-- 将数据覆盖写入到user_addr_info
+insert overwrite table user_addr_info
+select *
+from user_addr_info_new_temp;
+```
+
+### hive索引
+
+> hive3.0已经删除，用起来很麻烦，索引需要手动维护，基本不使用。
+>
+> 如果需要索引提升性能，请使用orc文件格式，开启索引与布隆过滤器，分桶分区尽可能提升性能。
+
+### 文件格式
+
+> hive多种文件格式，默认是textfile纯文本文件存储，除了textfile，hive还提供了orc、parquet等文件格式。
+
+#### textfile
+
+> 纯文本文件
+>
+> 优点：简单、可读性强、可以使用任何分隔符、便于与其他工具共享数据、加载到hive的速度快。
+>
+> 缺点：IO性能低，压缩率低，结合压缩时，hive无法进行切片，导致无法并行操作效率低。
+>
+> 使用场景：小数据查询、用作第一层数据的加载、测试使用。
+
+模拟100M的文件载入hive中（文件每行内容都是1024个`0`，一共100行即100M）
+
+hdfs上文件的大小还是100M**不做压缩**
+
+```sql
+-- textfile
+create table big_files_textfile
+(
+    content string
+) stored as textfile;
+drop table big_files_textfile;
+
+load data local inpath "/root/hive_data_samples/big_file.txt"
+    into table big_files_textfile;
+
+select *
+from big_files_textfile;
+```
+
+#### sequencefile
+
+> sequencefile是hadoop里用来存储序列化的键值对即二级制文件格式的一种。
+>
+> sequencefile也可作为MR程序的输入和输出，hive也支持这种格式。
+>
+> 优点：以二进制kv存储，与hadoop底层交互友好，可压缩、可分割，优化磁盘IO利用率，支持并行操作，查询效率高。
+>
+> 缺点：存储空间占用大，与非hadoop生态工具不兼容。
+>
+> 使用场景：小量数据，查询列比较多，总体上使用较少。
+
+模拟100M的文件载入hive中（文件每行内容都是1024个`0`，一共100行即100M）
+
+hdfs上文件的大小为101.48 MB，压缩率一般
+
+```sql
+-- sequencefile
+create table big_files_sequencefile
+(
+    content string
+) stored as sequencefile;
+drop table big_files_sequencefile;
+
+-- 不能使用load data加载，load data只是做了复制，需要用insert into select加载成parquet
+insert into big_files_parquet
+select *
+from big_files_textfile;
+```
+
+#### parquet
+
+> Parquet 是 Cloudera 与 Twitter 合作支持的 Hadoop 生态系统中另一种面向开源列的文件格式。Parquet 在大数据从业者中非常受欢迎，因为它提供了大量的存储优化，尤其是在分析工作负载中。与 ORC 一样，Parquet 还提供列压缩，可节省大量存储空间，同时允许您读取单个列，而不是读取完整的文件。
+>
+> 与传统存储解决方案相比，它在性能和存储要求方面提供了显著优势。它更高效地执行数据 IO 样式操作，并且在支持复杂的嵌套数据结构方面非常灵活。事实上，它特别设计，牢记嵌套数据结构。
+>
+> Parquet 也是一种更好的文件格式，用于降低存储成本，并加快大量数据集的读取步骤。Parquet与Spark配合得很好。事实上，它是用于在 Spark 中写入和读取数据的默认文件格式
+>
+> 优点：高效的IO操作，支持压缩、分割，优化磁盘利用率，可用于各种数据处理框架。
+>
+> 缺点：不支持acid、insert、update、delete操作。
+>
+> 使用场景：适用于字段多，只读不更改的场景。
+
+模拟100M的文件载入hive中（文件每行内容都是1024个`0`，一共100行即100M）
+
+hdfs上文件的大小仅为413.61KB（主要是存储的都是0，可能不严谨，可以使用其他文件测试，压缩率都是很高的）压缩率高
+
+```sql
+-- parquet
+create table big_files_parquet
+(
+    content string
+) stored as parquet;
+drop table big_files_parquet;
+
+-- 不能使用load data加载，load data只是做了复制，需要用insert into select加载成parquet
+insert into big_files_parquet
+select *
+from big_files_textfile;
+```
+
+#### orc
+
+>ORC
+>
+>ORC (Optimized Row Columnar)，是专为 Hadoop 工作负载设计的免费开源列存储格式。正如名称所暗示的，ORC 是一种自我描述的优化文件格式，它将数据存储到列中，使用户能够只读取和解压缩所需的片段。它是传统记录列文件 （RCFile） 格式的继承者，旨在克服其他 Hive 文件格式的限制。访问数据的时间大大缩短，数据大小也减小到 75%。ORC 提供了一种更高效、更好的方法来存储数据，以通过使用 Tez 的 SQL on-Hadoop 解决方案（如 Hive）进行访问。
+>
+>ORC 与其他 Hive 文件格式相比具有许多优势，例如高数据压缩、更快的性能、预测性向下推的功能，以及更多，存储的数据被组织成条带，从而实现从 HDFS 进行大量、高效的读取。
+>
+>优点：IO性能高、支持压缩、支持索引、查询效率高、支持矢量化查询。
+>
+>缺点：加载数据性能低，读取全量数据性能较差。
+>
+>使用场景：hive中大型文件的存储、查询。
+
+模拟100M的文件载入hive中（文件每行内容都是1024个`0`，一共100行即100M）
+
+hdfs上文件的大小仅为651B（主要是存储的都是0，可能不严谨，可以使用其他文件测试，压缩率都是很高的）压缩率高
+
+```sql
+-- orc
+create table if not exists big_files_orc
+(
+    content string
+) stored as orc;
+drop table if exists big_files_orc;
+
+-- 不能使用load data加载，load data只是做了复制，需要用insert into select加载成orc
+insert into big_files_orc
+select *
+from big_files_textfile;
+```
+
+### hive数据压缩
+
+> hadoop支持的压缩，hive也都支持。可以参考hadoop笔记。
+
+```sql
+-- 开启hive中间传输数据压缩功能
+-- 1)开启hive中间传输数据压缩功能
+set hive.exec.compress.intermediate=true;
+-- 2)开启mapreduce 中map输出压缩功能
+set mapreduce.map.output.compress=true;
+-- 3)设置mapreduce中map输出数据的压缩方式
+set mapreduce.map.output.compress.codec=org.apache.hadodp.io.compress.SnappyCodec;
+-- 开启Reduce输出阶段压缩
+-- 1)开启hive最终输出数据压缩功能
+set hive.exec.compress.output=true;
+-- 2)开启mapreduce最终输出数据压缩
+set mapreduce.output.fileoutputformat.compress=true;
+-- 3)设置mapreduce最终数据输出压缩方式
+set mapreduce.output.fileoutputformat.compress.codec=org.apache.hadoop.io.compress.SnappyCodec;
+-- 4)设置mapreduce最终数据输出压缩为块压缩
+set mapreduce.output.fileoutputformat.compress.type=BLOCK;
+```
+
+```sql
+-- orc格式表开启snappy压缩
+create table big_file_orc_snappy
+    stored as orc tblproperties ("orc.compress" = "SNAPPY")
+as
+select *
+from big_files_textfile;
+```
+
+### hive小文件存储优化
+
+> hdfs不适合处理小文件，每个文件都要存储元数据信息，hadoop中每个文件都会开启一个MR程序，过多小文件会导致资源浪费。
+>
+> hive提供了一个机制，可以自动合并小文件。
+
+```sql
+-- 如果hive的程序，只有maptask,将MapTaskj产生的所有小文件进行合并
+set hive.merge.mapfiles=true;
+-- 如果hive的程序，有Map和ReduceTask, 将ReduceTask产生的所有小文件进行合并
+set hive.merge.mapredfiles=true;
+-- 每一个合并的文件的大小(244M)
+set hive.merge.size.per.task=256000000;
+-- 平均每个文件的大小，如果小于这个值就会进行合并(15M)
+set hive.merge.smallfiles.avgsize=16000000;
+
+-- 设置Hive中底层MapReduce读取数据的输入类:将所有文件合并为一个大文件作为输入
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+```
+
+### orc索引
+
+#### Row Group Index
+
+1. 建立orc格式表时，指定参数`"orc.create.index"="true"`，便会创建Row Gruop Index
+2. 为了有效利用orc Row Group Index索引，必须对索引字段进行排序。
+
+```sql
+-- 1、 开启索引配置
+set hive.optimize.index.filter=true;
+-- 2、创建表并制定构建索引
+create table tb_sogou_orc_index
+stored as orc tblproperties ("orc.create.index"="true")
+as select * from tb_sogou_source
+distribute by stime
+sort by stime;
+-- 3. 当进行范围或者 等值查询(<,>,=) 时就可以基于构建的索引进行查询
+select count() from tb_sogou_orc_index where stime > '12:00:00' and stime < 18:00:00';
+```
+
+#### Bloom Filter Index
+
+> 基于布隆过滤器算法，过滤表中没有的数据
+
+1. 只能用于等值判断条件时，利用布隆过滤器在查询前过滤表中没有的数据，不需要走全表扫描。
+
+```sql
+-- 创建表指定创建布隆索引
+create table tb_ sogou_orc_bloom
+stored as orc tblproperties
+("orc.create.index"= "true","orc.bloom.filter.columns"="stime,userid")
+as select * from tb_sogou_source
+distribute by stime
+sort by stime;
+-- stime的范围过滤可以走row group index, userid的过滤 可以走bloom filter index
+select
+count(*)
+from tb_sogou_orc_index
+where stime > '12:00:00' and stime < '1 8:00:00'
+and userid = '3933365481995287';
+```
+
+### orc矢量查询优化
+
+>Hive的默认查询执行引擎一次处理一行，而矢量化查询执行是一种Hive针对0RC文件操作的特性。
+>
+>目的是按照每批1024行读取数据，并且一次性对整个记录整合（而不是对单条记录）应用操作，提升了过滤、联合、聚合等等操作的性能。
+>
+>注意：要使用矢量化查询执行，就必须以0RC格式存储数据。
+
+```sql
+-- 开启矢量化查询
+set hive.vectorized.execution.enabled=true;
+set hive.vectorized.execution.reduce.enabled=true;
 ```
