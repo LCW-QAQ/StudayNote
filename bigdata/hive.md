@@ -276,7 +276,7 @@ create table user_info_dy_part
 load data inpath "/user/hive/warehouse/test.db/hero/tank.txt" into table hero partition (role_ext = "tank");
 ```
 
-### 自动分区
+### 动态分区
 
 ```sql
 # 开启自动分区
