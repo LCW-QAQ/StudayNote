@@ -127,6 +127,14 @@ hive-site.xml
 
 如果启动后报错，找不到mysql驱动，去maven上下一个mysql驱动放到`HIVE_HOME/lib`下就行了。
 
+### Metastore单独部署
+
+> 有些应用也可能依赖于hive的metastore服务，因此可以考虑单独部署metastore服务。
+>
+> 开发中为了方便，我们通常还是将hiveserver2与metastore部署在一起。
+
+
+
 ## 客户端
 
 ### Hive CLI
@@ -821,7 +829,7 @@ with rollup
 order by GROUPING__ID;
 ```
 
-## hive技巧
+## hive技巧与优化
 
 ### url解析
 
@@ -1443,7 +1451,258 @@ and userid = '3933365481995287';
 >注意：要使用矢量化查询执行，就必须以0RC格式存储数据。
 
 ```sql
--- 开启矢量化查询
+-- 开启矢量化查询，默认为false
 set hive.vectorized.execution.enabled=true;
 set hive.vectorized.execution.reduce.enabled=true;
 ```
+
+### Hive Job性能优化
+
+#### 本地模式
+
+> 开启本地模式，让hive自动判断，满足执行数据量非常小且逻辑简单的查询，会直接在本地机器服务器上运行，不需要去yarn申请资源。
+>
+> **!!!注意本地模式需要在hive服务器环境中设置**
+
+```sql
+# 开启本地模式，默认为false
+set hive.exec.mode.local.auto=true;
+
+# 想要在本地运行，需要满足一下条件
+# 输入大小小于给定值，默认128M
+set hive.exec.mode.local.auto.inputbytes.max=134217728
+# map-task数量必须小于给定值，默认4
+set hive.exec.mode.local.auto.tasks.max=4
+# reduce-task数量必须为0 or 1
+```
+
+#### JVM重用
+
+> hadoop默认会为每个map task开启一个JVM，可以配置允许map task在JVM中的重用次数。
+
+```
+# 在mapred-site.xml中添加以下参数
+# hadoop3不再支持此参数
+mapreduce.job.jvm.numtasks=10
+```
+
+#### hql并行
+
+> hive在执行hql时，会解析多个stage，如果多个stage彼此有依赖关系，那么就需要等待依赖的stage执行完成，才能执行。
+>
+> 但是执行没有依赖关系的语句时，hive任然串行运行，通过配置支持无依赖关系的语句并行。
+
+```sql
+# 开启并行，默认为false
+set hive.exec.parallel=true;
+# 配置并行线程数，默认为8
+set hive.exec.parallel.thread.number=8;
+```
+
+#### MapJoin
+
+> 小表join大表时，我们可以利用分布式缓存存储小表数据，开启多个map-task处理大表数据最后直接输出到结果文件中。
+>
+> 开启自动mapjoin，hive可以自动进行mapjoin操作，缓存小表数据，map-task并行处理大表数据。
+
+```sql
+# hive2.0之前需要配置以下参数，hive2.0即以后版本，已经自动开启
+set hive.auto.convert.join=true;
+set hive.mapjoin.smalltable.filesize=25M;
+set hive.auto.convert.join.noconditionaltask.size=512000000;
+```
+
+#### ReduceJoin
+
+> 大表join大表时，只能通过多个reduce-task并行处理才能提升性能。（即由reduce-task进行分区操作）
+>
+> 但是reduce join性能提升有限，数据还是必须要走shuffle。
+>
+> 该选项不需要配置，如果满足mapjoin就会走mapjoin，不满足mapjoin会走reducejoin
+
+#### BucketJoin
+
+> 利用分桶表优化大表join大表性能，要求分桶字段=Join字段，桶的个数相等或者成倍数。
+>
+> 数据表既分桶又排序时，性能提升最大。
+>
+> 注意bucket join也是mapjoin的一种，只不过利用了分桶字段，在join时只需要在当前桶中扫描，以此提升性能。
+
+```sql
+# 开启基于桶的mapjoin
+set hive.optimize.bucketmapjoin=true;
+
+# 开启SMB(Sort-Merge-Bucket) Join优化
+/*
+当连接的两个表满足smb条件时（有序的分桶）自动采用sbmJoin（分桶Join,M or R）
+我的理解是都有序了（还排锤子序），在排序算法做了优化
+*/
+set hive.auto.convert.sortmerge.join=true;
+set hive.optimize.bucketmapjoin.sortedmerge=true;
+
+/*
+开启多路join加载到map中的开关
+Tips：多表在一个job连接时，大表放在后/*+STREAMTABLE*/(a)a为大表，利用reduce buffer减小内存消耗（同key，不同key多表连接时也是大表放在 后减小io）。
+这些都是基于ast自动完成
+*/
+set hive.auto.convert.sortmerge.join.noconditionaltask=true;
+# 当n-1个表的总和小于等于该值时启动n-way mapjoin
+hive.auto.convert.join.noconditionaltask.size=250000000;
+```
+
+#### 关联优化
+
+> select * from students gruop by id order by id;
+>
+> 当前语句有两种执行方案：
+>
+> 1. 方式一
+>
+>     1. 开一个mr程序做group by操作，经过shuffle对id分组
+>     2. 再开启一个mr程序对分组内的字段排序
+> 2. 方式二
+>     1. 开一个MR程序，在shuffle阶段做分组并排序
+>
+> 显然方式二性能更好，但是hive默认会选择方式一，可以开启关联优化，让hive尽可能的对这中有关联字段（分组排序都是id）进行优化，使用方式一运行。
+
+```sql
+# 默认false
+set hive.optimize.correlation=true;
+```
+
+#### CBO优化器
+
+* hive的默认优化器，在执行一些聚合操作时，底层解析的方案可能不是最佳方案。
+* 例如现在表中有1000条数据，我们现在要查id=100的数据，并且我们为id创建了索引。
+    * 1000条数据中有900条都是id=100
+    * 方案一
+        * 由于我们创建了索引，hive默认的优化器RBO会根据id索引，到索引文件中查询到索引对应记录的偏移量，再去记录中查询结果（类似mysql回表）。但是此时90%的数据都是id=100，直接全表扫描性能会比走索引再回表，性能更高。
+    * 方案二
+        * 由于id=100数据占全表数据的90%，因此不走索引，直接全表扫描性能更高。
+
+hive默认的优化器是RBO（rule basic optimise）基于规则的优化器，由于我们创建了索引，基于规则RBO会选择方案一。
+
+还有另一种优化器CBO（cost basic optimise）基于代价分析的优化器，会分析我们表中的数据，统计数值出现的次数、条数、分布等，来综合判断那种处理方式是最佳方案。
+
+```sql
+# 开启cbo优化器
+set hive.cbo.enable=true;
+set hive.compute.query.using.stats=true;
+set hive.stats.fetch.column.stats=true;
+```
+
+cbo底层通过Analyze分析器，分析表中数据，再做出选择。
+
+#### 谓词下推
+
+> select * from students where age > 22;这条语句中`>`就是一个谓词，我们可以理解为过滤条件。
+>
+> 谓词下推就是在不影响最终结果的情况下，尽可能提早将数据过滤，这些过滤条件会下推到map-task上，以减少map到reduce端的数据（也减少了shuffle的数据），提升性能。
+>
+> hive会自动根据规则，优化sql进行谓词下推。
+
+```sql
+# 默认开启
+set hive.optimize.ppd=true;
+```
+
+谓词下推的例子：
+
+下面两句sql，那条性能很高，显然是第二条，提前在table_b上过滤了日期，减少了join的次数。
+
+```sql
+select * 
+from table_a a
+join table_b b on a.id = b.id
+where b.date between "2022-01-01" and "2022-06-06";
+
+select * 
+from table_a a
+join (
+    select * 
+    from table_b b 
+    where b.date between "2022-01-01" and "2022-06-06"
+) b 
+on a.id = b.id;
+```
+
+什么情况下，hive可以优化sql，进行谓词下推？
+
+1. 对于inner join、full join，条件on后面还是where后面，性能上没什么区别。
+2. 对于left join，右侧表写在on后面，左侧表写在where后面，性能会有提高。
+3. 对于right join，左侧表写在on后面，右侧表写在where后面，性能会有提高。
+4. 条件分散在两个表时，按照2、3组合。
+
+#### 数据倾斜
+
+> 数据倾斜的典型现象就是，提交一个job后，大多数job都完成了，有少数job长时间没有完成，导致整体进度卡在99%。
+>
+> 数据倾斜的本质就是数据分配不均匀。
+
+##### 分组导致数据倾斜
+
+group by与count(distinct)很容易出现数据倾斜，如果数据本身就是倾斜的，分组后当然出现倾斜。根本原因就是分区规则导致的。
+
+hive提供了一些分区时的优化方案：
+
+1. 方案一
+
+    - ```sql
+        # 开启map端聚合
+        -- 在不影响结果的情况下，hive尽可能在map端完成聚合（例如求平均值时，无法在map端聚合），减少shuffle的数据量和reducer阶段的执行时间，避免每个task数据差异过大导致数据倾斜。
+        -- 相当于hadoop的Combiner
+        set hive.map.aggr=true;
+        ```
+
+2. 方案二
+
+    - ```sql
+        # 开启group by数据倾斜自动负载均衡
+        /*
+        hive会开启两个MR程序
+        第一个MR自动将数据随机分部到reducer中，每个reducer进行局部聚合。
+        此时由于是随机分布，导致key相同的数据并没有全部聚合一起。
+        第二个MR将上一步的结果进行group by，最终汇聚结果。
+        */
+        set hive.groupby.skewindata=true;
+        ```
+
+##### Join导致数据倾斜
+
+> 当两张大表join时，无法mapjoin，只能走reduce join，如果某种字段的值过多，仍然会导致数据倾斜。
+>
+> 此时只能选择其他方案解决大表join的数据倾斜问题
+
+1. 谓词下推
+
+    - join提前过滤数据，即谓词下推（详见谓词下推）
+
+2. bucket join
+
+    - 方案一最后仍然是reduce join，如果经过谓词下推，过滤后的数据还是很大，方案一还是会产生数据倾斜。
+    - 我们可以将两张表构建为分桶表，使用bucket map join，尽可能避免数据倾斜。
+
+3. skew join
+
+    - 开启join数据倾斜自动负载均衡
+
+    - ```sql
+        /*
+        skewjoin是hive专门为了避免join阶段数据倾斜而设计的
+        原理是将mapjoin与reducejoin合并，如果某个值出现了数据倾斜，就单独对数据倾斜的数据单独开启mapjoin
+        没有数据倾斜的直接走reducejoin，这样就避免了reducejoin数据倾斜（原理与gruopby自动负载均衡类似，都是拆分了倾斜的数据，利用多个MapTask来处理）
+        最后 union mapjoin与reducejoin的数据
+        
+        在Hive中，UNION JOIN，LEFT OUTER JOIN, RIGHT OUTER JOIN, FULL OUTER JOIN 这几种join是无法使用skew join优化的。只有INNER JOIN才可以！
+        */
+        -- 开启运行过程中skewjoin .
+        set hive.optimize.skewjoin=true;
+        -- 如果这个key的出现的次数超过这个范围
+        set hive.skew.join.key=100000;
+        -- 在编译时判断是否会产生数据倾斜
+        set hive.optimize.skewjoin.compiletime=true;
+        -- 不合并，提升性能
+        set hive.optimize.union.remove=true;
+        -- 如果Hi ve的底层走的是MapReduce,必须开启这个属性，才能实现不合并
+        set mapreduce.input.fileinputformat.input.dir.recursive=true;
+        ```
