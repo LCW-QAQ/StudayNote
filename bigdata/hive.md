@@ -1467,15 +1467,14 @@ set hive.vectorized.execution.reduce.enabled=true;
 > **!!!注意本地模式需要在hive服务器环境中设置**
 
 ```sql
-# 开启本地模式，默认为false
+-- 开启本地模式，默认为false
 set hive.exec.mode.local.auto=true;
-
-# 想要在本地运行，需要满足一下条件
-# 输入大小小于给定值，默认128M
-set hive.exec.mode.local.auto.inputbytes.max=134217728
-# map-task数量必须小于给定值，默认4
-set hive.exec.mode.local.auto.tasks.max=4
-# reduce-task数量必须为0 or 1
+-- 想要在本地运行，需要满足一下条件
+-- 输入大小小于给定值，默认128M
+set hive.exec.mode.local.auto.inputbytes.max=134217728;
+-- map-task数量必须小于给定值，默认4
+set hive.exec.mode.local.auto.tasks.max=4;
+-- reduce-task数量必须为0 or 1
 ```
 
 #### JVM重用
@@ -1650,7 +1649,7 @@ hive提供了一些分区时的优化方案：
 1. 方案一
 
     - ```sql
-        # 开启map端聚合
+        -- 开启map端聚合
         -- 在不影响结果的情况下，hive尽可能在map端完成聚合（例如求平均值时，无法在map端聚合），减少shuffle的数据量和reducer阶段的执行时间，避免每个task数据差异过大导致数据倾斜。
         -- 相当于hadoop的Combiner
         set hive.map.aggr=true;
@@ -1659,7 +1658,7 @@ hive提供了一些分区时的优化方案：
 2. 方案二
 
     - ```sql
-        # 开启group by数据倾斜自动负载均衡
+        -- 开启group by数据倾斜自动负载均衡
         /*
         hive会开启两个MR程序
         第一个MR自动将数据随机分部到reducer中，每个reducer进行局部聚合。
@@ -1708,3 +1707,81 @@ hive提供了一些分区时的优化方案：
         -- 如果Hi ve的底层走的是MapReduce,必须开启这个属性，才能实现不合并
         set mapreduce.input.fileinputformat.input.dir.recursive=true;
         ```
+
+#### 防止JVM内存溢出
+
+```sql
+-- 防止堆JVM内存移除
+set hive.exec.parallel=true;
+set hive.support.concurrency=false;
+-- 配置map和reduce阶段内存限制
+set mapreduce.map.memory.mb=1500;
+set mapreduce.reduce.memory.mb=1500;
+-- 配置JVM堆内存
+set mapreduce.map.java.opts=-Xmx2048;
+set mapreduce.reduce.java.opts=-Xmx2048;
+-- 开启map端聚合
+-- 在不影响结果的情况下，hive尽可能在map端完成聚合（例如求平均值时，无法在map端聚合），减少shuffle的数据量和reducer阶段的执行时间，避免每个task数据差异过大导致数据倾斜。
+-- 相当于hadoop的Combiner
+set hive.map.aggr=true;
+-- 开启group by数据倾斜自动负载均衡
+/*
+hive会开启两个MR程序
+第一个MR自动将数据随机分部到reducer中，每个reducer进行局部聚合。
+此时由于是随机分布，导致key相同的数据并没有全部聚合一起。
+第二个MR将上一步的结果进行group by，最终汇聚结果。
+*/
+set hive.groupby.skewindata=true;
+
+-- yarn资源相关配置
+set yarn.app.mapreduce.am.resource.mb=4096;
+set yarn.app.mapreduce.am.command-opts=-Xmx3276M; -- 注：java.opts是memory.mb的80%左右
+set yarn.app.mapreduce.am.resource.cpu-vcores=4; -- MR ApplicationMaster占用的虚拟CPU个数
+```
+
+#### 万能优化代码
+
+```sql
+set hive.exec.dynamic.partition = true;
+set hive.exec.dynamic.partition.mode = nostrict;
+set hive.optimize.bucketmapjoin=true;
+set hive.auto.convert.sortmerge.join=true;
+set hive.optimize.bucketmapjoin.sortedmerge=true;
+
+-- 开启本地模式，默认为false
+set hive.exec.mode.local.auto=true;
+-- 想要在本地运行，需要满足一下条件
+-- 输入大小小于给定值，默认128M
+set hive.exec.mode.local.auto.inputbytes.max=134217728;
+-- map-task数量必须小于给定值，默认4
+-- set hive.exec.mode.local.auto.tasks.max=4;
+-- reduce-task数量必须为0 or 1
+
+-- 防止堆JVM内存移除
+set hive.exec.parallel=true;
+set hive.support.concurrency=false;
+-- 配置map和reduce阶段内存限制
+set mapreduce.map.memory.mb=1500;
+set mapreduce.reduce.memory.mb=1500;
+-- 配置JVM堆内存
+set mapreduce.map.java.opts=-Xmx2048;
+set mapreduce.reduce.java.opts=-Xmx2048;
+-- 开启map端聚合
+-- 在不影响结果的情况下，hive尽可能在map端完成聚合（例如求平均值时，无法在map端聚合），减少shuffle的数据量和reducer阶段的执行时间，避免每个task数据差异过大导致数据倾斜。
+-- 相当于hadoop的Combiner
+set hive.map.aggr=true;
+-- 开启group by数据倾斜自动负载均衡
+/*
+hive会开启两个MR程序
+第一个MR自动将数据随机分部到reducer中，每个reducer进行局部聚合。
+此时由于是随机分布，导致key相同的数据并没有全部聚合一起。
+第二个MR将上一步的结果进行group by，最终汇聚结果。
+*/
+set hive.groupby.skewindata=true;
+
+-- yarn资源相关配置
+set yarn.app.mapreduce.am.resource.mb=4096;
+set yarn.app.mapreduce.am.command-opts=-Xmx3276M; -- 注：java.opts是memory.mb的80%左右
+set yarn.app.mapreduce.am.resource.cpu-vcores=4; -- MR ApplicationMaster占用的虚拟CPU个数
+```
+
