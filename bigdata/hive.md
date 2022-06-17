@@ -269,7 +269,7 @@ create table user_info_dy_part
 
 分区表需要使用`load data`语法加入数据：
 
-### 手动分区
+### 静态分区
 
 
 ```sql
@@ -277,6 +277,8 @@ load data inpath "/user/hive/warehouse/test.db/hero/tank.txt" into table hero pa
 ```
 
 ### 动态分区
+
+> **踩坑：!!!我日你的哥，分区字段值不能是中文！！！**
 
 ```sql
 # 开启自动分区
