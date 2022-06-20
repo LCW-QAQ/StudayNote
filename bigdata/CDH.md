@@ -125,11 +125,9 @@ yum localinstall -y cloudera-manager-daemons-6.2.0-968826.el7.x86_64.rpm
 yum localinstall -y cloudera-manager-agent-6.2.0-968826.el7.x86_64.rpm
 ```
 
-#### 上传组件包
+#### 上传离线包
 
 安装成功后，将parcel-6.2.0文件夹中的大数据组件包，上传至`/opt/cloudera/parcel-repo`
-
-这里我在做测试，`cloudera`**可能是根据rpm包的位置**，来选择安装位置的，我将rpm包上传到`/opt`下，再使用`yum localinstall`安装后，`cloudera`的安装位置就是`/opt/cloudera`。（安装时注意一下就行了）
 
 #### 配置
 
@@ -191,3 +189,28 @@ systemctl stop cloudera-scm-agent
 访问web页面`http://cdh1:7180/cmf/login`即可，默认登录名与密码都是`admin`
 
 启动cdh服务后，重启虚拟机，cdh服务也会自动启动，需要彻底关闭cdh服务，尝试使用`systemctl disable`系列命令（我也没试过，真经人谁关闭自动启动啊）
+
+## 注意事项
+
+摘自：https://blog.csdn.net/qq_36488175/article/details/109130446
+
+安装中可能出现问题：
+
+1. hostname中指定的集群名，不能有下划线！！！！
+    2.防火墙请关闭，这样你可少很多烦恼？？？
+    3.执行systemctl start cloudera-scm-agent 和 systemctl start cloudera-scm-server启动失败
+    请使用：journalctl -xe指令仔细查看错误信息。
+    然后百度解决！
+2. jdk别用自己的，要用官网提供的。
+3. 保证集群机器的内存足够！！！
+4. 第一次安装完成进入，可能很多都没启动成功爆红。根据提示错误信息，修正配置，重启即可！！\
+
+
+
+注意如果agent安装成功，应该会在当前管理的主机页面，显示所有主机
+
+并且进度条应该与下图一致（cdh6.2.0版本）
+
+如果进度条中有`install agent`选项，说agent安装有问题，检查一下是什么问题。
+
+![image-20220620224023262](CDH.assets/image-20220620224023262.png)
