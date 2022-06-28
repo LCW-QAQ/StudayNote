@@ -1056,3 +1056,36 @@ if __name__ == '__main__':
     print(rdd2.collect())
     print(count)
 ```
+
+### 窗口函数
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StringType, IntegerType
+from pyspark.sql.window import Window
+from pyspark.sql import functions as F
+
+if __name__ == '__main__':
+    spark = SparkSession.builder \
+        .appName("test") \
+        .master("local[*]") \
+        .getOrCreate()
+
+    sc = spark.sparkContext
+
+    df = sc.parallelize([
+        (1001, 0),
+        (1001, 2),
+        (1001, 1),
+        (1003, 12),
+        (1004, 11),
+    ]).toDF("id int, score int")
+    df.createTempView("scores")
+    spark.sql("""
+    select id, score, sum(score) over(partition by id order by score) as accumulator_sum from scores
+    """).show()
+
+    w = Window().partitionBy("id").orderBy("score")
+    df.select(["id", "score", F.sum("score").over(w).alias("accumulator_sum")]).show()
+```
+
