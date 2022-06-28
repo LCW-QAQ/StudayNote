@@ -1371,6 +1371,8 @@ set mapreduce.output.fileoutputformat.compress=true;
 set mapreduce.output.fileoutputformat.compress.codec=org.apache.hadoop.io.compress.SnappyCodec;
 -- 4)设置mapreduce最终数据输出压缩为块压缩
 set mapreduce.output.fileoutputformat.compress.type=BLOCK;
+-- 写入时压缩生效
+set hive.exec.orc.compression.strategy=COMPRESSION;
 ```
 
 ```sql
@@ -1740,6 +1742,21 @@ set yarn.app.mapreduce.am.resource.cpu-vcores=4; -- MR ApplicationMaster占用�
 ```
 
 #### 万能优化代码
+
+##### 常用优化选项
+
+```sql
+-- 动态分区配置
+set hive.exec.dynamic.partition=true;
+set hive.exec.dynamic.partition.mode=nonstrict;
+-- hive压缩
+set hive.exec.compress.intermediate=true;
+set hive.exec.compress.output=true;
+-- 写入时压缩生效
+set hive.exec.orc.compression.strategy=COMPRESSION;
+```
+
+##### 详细配置内存
 
 ```sql
 set hive.exec.dynamic.partition = true;
