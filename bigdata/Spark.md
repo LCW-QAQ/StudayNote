@@ -805,6 +805,118 @@ if __name__ == '__main__':
     """).show()
 ```
 
+#### 销售信息Demo
+
+数据的结构
+
+```json
+{"discountRate": 1, "dayOrderSeq": 8, "storeDistrict": "雨花区", "isSigned": 0, "storeProvince": "湖南省", "origin": 0, "storeGPSLongitude": "113.01567856440359", "discount": 0, "storeID": 4064, "productCount": 4, "operatorName": "OperatorName", "operator": "NameStr", "storeStatus": "open", "storeOwnUserTel": 12345678910, "corporator": "hnzy", "serverSaved": true, "payType": "alipay", "discountType": 2, "storeName": "杨光峰南食店", "storeOwnUserName": "OwnUserNameStr", "dateTS": 1563758583000, "smallChange": 0, "storeGPSName": "", "erase": 0, "product": [{"count": 1, "name": "百事可乐可乐型汽水", "unitID": 0, "barcode": "6940159410029", "pricePer": 3, "retailPrice": 3, "tradePrice": 0, "categoryID": 1}, {"count": 1, "name": "馋大嘴盐焗鸡筋110g", "unitID": 0, "barcode": "6951027300076", "pricePer": 2.5, "retailPrice": 2.5, "tradePrice": 0, "categoryID": 1}, {"count": 2, "name": "糯米锅巴", "unitID": 0, "barcode": "6970362690000", "pricePer": 2.5, "retailPrice": 2.5, "tradePrice": 0, "categoryID": 1}, {"count": 1, "name": "南京包装", "unitID": 0, "barcode": "6901028300056", "pricePer": 12, "retailPrice": 12, "tradePrice": 0, "categoryID": 1}], "storeGPSAddress": "", "orderID": "156375858240940641230", "moneyBeforeWholeDiscount": 22.5, "storeCategory": "normal", "receivable": 22.5, "faceID": "", "storeOwnUserId": 4082, "paymentChannel": 0, "paymentScenarios": "PASV", "storeAddress": "StoreAddress", "totalNoDiscount": 22.5, "payedTotal": 22.5, "storeGPSLatitude": "28.121213726311993", "storeCreateDateTS": 1557733046000, "payStatus": -1, "storeCity": "长沙市", "memberID": "0"}
+```
+
+```python
+# coding: utf-8
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.storagelevel import StorageLevel
+from pyspark.sql import functions as F
+
+"""
+各省的销售额
+TOP3销售省份中, 有多少店铺达到过日销售1000+
+TOP3省份中, 各省的平均单价
+TOP3省份中, 各省份的支付比例
+
+storeID 店铺ID
+receivable 订单金额
+storeProvince 店铺省份
+dateTS 订单的销售日期
+payType 支付类型
+
+写出结果到: mysql和hive
+"""
+
+
+def store_to_mysql_and_hive(df: DataFrame, tb_name: str):
+    df.write.jdbc(
+        mode="overwrite",
+        url="jdbc:mysql://cdh2/test?useUnicode=true&characterEncoding=utf-8",
+        table=f"{tb_name}",
+        properties={"user": "root", "password": "000000", "encoding": "utf-8"}
+    )
+
+    df.write.saveAsTable(f"default.{tb_name}", format="parquet", mode="overwrite")
+
+
+if __name__ == '__main__':
+    spark = SparkSession.builder \
+        .appName("SparkSql example") \
+        .master("local[*]") \
+        .config("spark.sql.shuffle.partitions", 2) \
+        .config("spark.sql.warehouse.dir", "hdfs://cdh1:8020/user/hive/warehouse") \
+        .config("hive.metastore.uris", "thrift://cdh2:9083") \
+        .enableHiveSupport() \
+        .getOrCreate()
+
+    df = spark.read.json("/user/root/test_data/mini.json")
+    # 数据清洗
+    df = df.dropna(thresh=1, subset=["storeProvince"]) \
+        .where("storeProvince != 'null'") \
+        .where("receivable < 10000") \
+        .select("storeProvince", "storeID", "receivable", "dateTS", "payType")
+
+    # 各省的销售额
+    province_sale_df = df.groupby("storeProvince").sum("receivable") \
+        .withColumnRenamed("sum(receivable)", "money") \
+        .withColumn("money", F.round("money", 2)) \
+        .orderBy("money", ascending=False)
+    province_sale_df.show()
+    store_to_mysql_and_hive(province_sale_df, "province_sale")
+
+    # ------
+    # 全省销售额度top3
+    top3_province_df = province_sale_df.limit(3) \
+        .select("storeProvince").withColumnRenamed("storeProvince", "top3_province")
+    top3_province_join_df = df.join(top3_province_df, on=df["storeProvince"] == top3_province_df["top3_province"])
+    top3_province_join_df.show()
+    top3_province_join_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+    # TOP3销售省份中, 有多少店铺达到过日销售1000+
+    province_hot_store_count_df = top3_province_join_df.groupby("storeProvince", "storeID",
+                                                                F.from_unixtime(df["dateTS"], "yyyy-MM-dd")) \
+        .sum("receivable").withColumnRenamed("sum(receivable)", "money") \
+        .dropDuplicates(subset=["storeID"]) \
+        .where("money > 1000") \
+        .groupby("storeProvince").count()
+    province_hot_store_count_df.show()
+    store_to_mysql_and_hive(province_hot_store_count_df, "province_hot_store_count")
+
+    # TOP3省份中, 各省的平均单价
+    top3_province_avg_money_df = top3_province_join_df.groupby("storeProvince") \
+        .avg("receivable") \
+        .withColumnRenamed("avg(receivable)", "avg_money") \
+        .withColumn("avg_money", F.round("avg_money", 2))
+    top3_province_avg_money_df.show()
+    store_to_mysql_and_hive(top3_province_avg_money_df, "top3_province_avg_money")
+
+    # TOP3省份中, 各省份的支付比例
+    top3_province_join_df.createTempView("province_pay")
+    top3_province_payType_percent_df = spark.sql("""
+    with q1 as (
+        select storeProvince, 
+            payType, 
+            count(*) over(partition by storeProvince) as total
+         from province_pay
+    ) 
+    select storeProvince, payType, concat(round(count(payType) / total * 100, 2), '%') as pay_type_percent
+    from q1
+    group by storeProvince, payType, total
+    """)
+    top3_province_payType_percent_df.show()
+    store_to_mysql_and_hive(top3_province_payType_percent_df, "top3_province_payType_percent")
+
+    # 清除缓存
+    top3_province_join_df.unpersist()
+```
+
 ### 文件读写
 
 ```python
@@ -1089,6 +1201,20 @@ if __name__ == '__main__':
     df.select(["id", "score", F.sum("score").over(w).alias("accumulator_sum")]).show()
 ```
 
+### spark.sql.shuffle.partitions
+
+spark.sql.shuffle.partitions和 spark.default.parallelism 的区别
+spark.default.parallelism只有在处理RDD时有效.
+spark.sql.shuffle.partitions则是只对SparkSQL有效
+
+两个值的设置都会影响在rdd或SparkSQL下的并行度
+
+### Spark中会导致Shuffle的算子
+
+1. repartition类的操作：比如repartition、repartitionAndSortWithinPartitions、coalesce等
+2. byKey类的操作：比如reduceByKey、groupByKey、sortByKey等
+3. join类的操作：比如join、cogroup等
+
 ## SparkOnHive
 
 > Spark通过Hive Metastore做hdfs上的hive表数据
@@ -1168,3 +1294,65 @@ $SPARK_HOME/sbin/start-thriftserver.sh \
 --hiveconf hive.server2.thrift.bind.host=cdh2 \
 --master local[*]
 ````
+
+## Spark3.0新特性
+
+### Adaptive Query Execution自适应查询(SparkSQL)
+
+> 类似于hive的CBO优化器, 通过运行时统计数据获得的元数据, 动态优化
+
+开启方式
+
+配置`spark.sql.adaptive.enabled`设置为true开启AQE优化
+
+
+
+优化案例
+
+1. 动态合并
+    - 运行时动态调整shuffle分区数量
+    - 例如有10个分区, 但是其中有3, 4个分区的大小只有1M, 其他分区又10M, 此时开启AQE后, 运行时会将相邻的小分区合并成一个分区.
+
+2. 动态join调整
+    - 动态调整join策略
+    - `select * from a join b on a.id = b.id where b.value like 'xyz%'`这条sql运行时, 默认会走sort merge join, 开启AQE后, 会动态检测sort merge join时数据的大小, 如果数据量太小, 就会优化成broadcast hash join, 将join的小表广播出去全局共享.
+3. 动态优化倾斜join
+    - 开启AQE后, 在join时, 有分区发生数据倾斜, 会将数据倾斜的分区分割成更小的分区, 并行话处理后汇聚, 提升性能.
+
+## 面试题
+
+### HashShuffle与SortShuffle
+
+#### HashShuffle
+
+> 未优化的HashShuffle每个Executor内的Task都会对数据分组, 然后写入到Reduce端(相当于没有做mapjoin), 浪费性能导致多次网络IO
+
+![image-20220628194906668](Spark.assets/image-20220628194906668.png)
+
+> 优化后的HashShuffle
+>
+> 在Executor内部采用了MapJoin, 先将数据在同一个Executor的Map端进行分组汇聚, 最后发送给Reduce, 减少网络IO开销.
+
+![image-20220628195109194](Spark.assets/image-20220628195109194.png)
+
+#### SortShuffle
+
+> SortShuffle有两种情况, 分别是普通情况与bypass机制
+
+每个Task会对数据进行当前分区内进行一下操作:
+
+1. 数据被写入内存(Map or Array)
+2. 然后对数据进行分组与排序
+3. 最后将数据汇聚一个文件中, 且会创建一个索引文件, 里面记录了每个分区的数据段.
+4. Reduce端主动拉取Task的数据, 通过索引文件拉取当前分组内的数据.
+
+![image-20220628195950910](Spark.assets/image-20220628195950910.png)
+
+bypass机制
+
+1. 当shuffle map task的数量小于`spark.shuffle.sort.bypassMergeThreshold=200`参数的值
+2. 当前计算链中没有聚合类的shuffle算子, 例如reduceByKey
+
+满足上面两个条件时, SortShuffle不会进行排序和分组(毕竟计算中根本没有分组操作, 当然就不需要排序与分组聚合了)
+
+![image-20220628201533450](Spark.assets/image-20220628201533450.png)
