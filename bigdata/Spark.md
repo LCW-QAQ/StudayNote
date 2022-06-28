@@ -1089,3 +1089,82 @@ if __name__ == '__main__':
     df.select(["id", "score", F.sum("score").over(w).alias("accumulator_sum")]).show()
 ```
 
+## SparkOnHive
+
+> Spark通过Hive Metastore做hdfs上的hive表数据
+>
+> 还有一个HiveOnSpark, 将hive sql转换成spark的rdd运行, 将spark作为执行引擎速度上远快于MR程序.
+
+spark配置
+
+在spark安装目录下的conf文件夹中配置`hive-site.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+
+<configuration>
+  <!-- 指定hive metastore uri -->
+  <property>
+    <name>hive.metastore.uris</name>
+    <value>thrift://cdh2:9083</value>
+  </property>
+  <!-- 指定hive数据库的目录 -->
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>/user/hive/warehouse</value>
+  </property>
+</configuration>
+```
+
+配置并开启hive metastore即可
+
+测试pyspark
+
+`$SPARK_HOME/bin/pyspark`进入pyspark交互环境
+
+`spark.sql("show databases;")`
+
+测试spark-sql
+
+`$SPARK_HOME/bin/spark-sql`进入spark-sql交互环境
+
+`show databases;`
+
+
+
+在pyspark程序中配置
+
+```python
+# coding: utf-8
+
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StringType, IntegerType
+from pyspark.sql import functions as F
+
+if __name__ == '__main__':
+    # 如果配置了$SPARK_HOME/conf下的hive-site.xml下面就不需要配置了, 只需要enableHiveSupport开启hive
+    spark = SparkSession.builder \
+        .appName("test") \
+        .master("local[*]") \
+        .config("spark.sql.warehouse.dir", "hdfs://cdh1:8020/user/hive/warehouse") \
+        .config("hive.metastore.uris", "thrift://cdh2:9083") \
+        .enableHiveSupport() \
+        .getOrCreate()
+
+    spark.sql("""
+        show databases; 
+        """).show()
+```
+
+## SparkThrift
+
+> Spark ThriftServer提供的Sql服务, 兼容hiveserver2协议, 直接使用hive客户端连接即可.
+
+启动spark-thriftserver
+
+````bash
+$SPARK_HOME/sbin/start-thriftserver.sh \
+--hiveconf hive.server2.thrift.port=10001 \
+--hiveconf hive.server2.thrift.bind.host=cdh2 \
+--master local[*]
+````
