@@ -84,8 +84,12 @@ linux bash启动时，不会执行/etc/profile中的环境变量，在`/.bashrc`
 > spark本地模式，在一个spark进程中开启多个线程模拟spark运行环境。
 >
 > 该模式下，由于只有一个进程，driver与woker是同一身份，都在一个进程内，executor对应多个线程。
+>
+> **注意spark-shell, pyspark等交互环境支持client模式**
 
 运行`$SPARK_HOME/bin/pyspark`
+
+内存小的机器指定一下driver与executor占用的内存`./pyspark --master yarn --deploy-mode client --num-executors 2 --executor-memory 512m --driver-memory 512m`
 
 ```python
 # 执行pyspark代码
