@@ -46,3 +46,37 @@ content nvarchar(100) not null
 
 insert into TB_LOGGER(content) values('新日志');
 ```
+
+### ER父子表
+
+> mycat跨库join比较麻烦, er表是将有一对一关系的两条数据存储到同一个库中, 从而避免跨库join
+
+schema.xml
+
+```xml
+<table name = "test" dataNode="dn1,dn2" rule="mod-long">
+       <childTable name="test_dtl" primaryKey="dtl_id" joinKey="test_id" parentKey="id" />
+</table>
+```
+
+```sql
+use itcast;
+show tables;
+create table TB_ER_PARENT(
+	id int primary key,
+	pname varchar(30)
+);
+create table TB_ER_CHILD(
+	id int primary key,
+	pid int,
+	cname varchar(30)
+);
+insert into TB_ER_PARENT(id, pname) 
+values(1, 'p1');
+insert into TB_ER_CHILD(id, pid, cname) 
+values(1, 1, 'c1');
+
+select * 
+from TB_ER_CHILD c
+join TB_ER_PARENT p on c.pid = p.id;
+```
