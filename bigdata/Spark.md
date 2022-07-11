@@ -1286,7 +1286,7 @@ if __name__ == '__main__':
         """).show()
 ```
 
-## SparkThrift
+## SparkThriftServer
 
 > Spark ThriftServer提供的Sql服务, 兼容hiveserver2协议, 直接使用hive客户端连接即可.
 
