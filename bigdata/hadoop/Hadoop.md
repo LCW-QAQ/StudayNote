@@ -374,6 +374,26 @@ hadoop-3
 
 ### 启动hadoop
 
+启动前需要配置一些环境变量
+
+`$HADOOP_HOME/etc/hadoop/hadoop-env.sh`
+
+```bash
+export HDFS_DATANODE_USER=root
+export HDFS_NAMENODE_USER=root
+export HDFS_SECONDARYNAMENODE_USER=root
+```
+
+`$HADOOP_HOME/etc/hadoop/yarn-env.sh`
+
+```bash
+export YARN_RESOURCEMANAGER_USER=root
+export HADOOP_SECURE_DN_USER=root
+export YARN_NODEMANAGER_USER=root
+```
+
+
+
 分别启动hdfs与yarn
 
 脚本路径在hadoop目录下的sbin中
