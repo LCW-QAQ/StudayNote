@@ -1462,6 +1462,32 @@ set hive.vectorized.execution.reduce.enabled=true;
 
 ### Hive Job性能优化
 
+#### 关闭ReduceJoin优化为MapJoin
+
+set hive.auto.convert.join = false;
+
+#### 有序动态分区
+
+该问题主要出现与学习阶段, 内存不够
+
+动态分区的优化点:  有序动态分区
+
+```
+什么时候需要优化? 
+	有时候表中动态分区比较多, hive提升写入效率, 会启动多个reduce程序进行并行写入操作, 此时对内存消耗比较大, 有可能会出现内存溢出问题
+
+解决方案: 开启有序动态分区
+	开启后, reduce不会再并行运行了, 只会运行一个, 大大降低了内存消耗, 从而能够正常的运行完成,但是效率会降低
+	
+	需要在CM的hive的配置窗口下, 开启此配置
+	
+注意: 目前不改, 后续出现动态分区问题后, 在尝试开启
+
+通过CM更改, 是全局更改, 是全局有效的, 相当于直接在hive-site.xml中更改
+```
+
+![image-20210924101102462](hive.assets/image-20210924101102462.png)
+
 #### 本地模式
 
 > 开启本地模式，让hive自动判断，满足执行数据量非常小且逻辑简单的查询，会直接在本地机器服务器上运行，不需要去yarn申请资源。
@@ -1523,7 +1549,7 @@ set hive.auto.convert.join.noconditionaltask.size=512000000;
 >
 > 该选项不需要配置，如果满足mapjoin就会走mapjoin，不满足mapjoin会走reducejoin
 
-#### BucketJoin
+#### BucketMapJoin
 
 > 利用分桶表优化大表join大表性能，要求分桶字段=Join字段，桶的个数相等或者成倍数。
 >
@@ -1552,6 +1578,34 @@ set hive.auto.convert.sortmerge.join.noconditionaltask=true;
 # 当n-1个表的总和小于等于该值时启动n-way mapjoin
 hive.auto.convert.join.noconditionaltask.size=250000000;
 ```
+
+#### SMB (Sort Merge Bucket Map Join)
+
+SMB是针对bucket mapjoin的一种优化，用于大表join大表
+
+限制条件：
+
+1. 小表的bucket数=大表bucket数
+2. Bucket 列 == Join 列 == sort 列
+3. 必须是应用在bucket mapjoin的场景中
+
+开启配置
+
+```bash
+set hive.auto.convert.sortmerge.join=true;
+set hive.optimize.bucketmapjoin = true;
+set hive.optimize.bucketmapjoin.sortedmerge = true;
+set hive.auto.convert.sortmerge.join.noconditionaltask=true;
+```
+
+注意事项：
+
+* hive并不检查两个join的表是否已经做好bucket且sorted，需要用户自己去保证join的表，否则可能数据不正确。有两个办法:
+
+* hive.enforce.sorting 设置为true。
+* 动生成符合条件的数据，通过在sql中用distributed c1 sort by c1 或者 cluster by c1
+* 表创建时必须是CLUSTERED且SORTED，如下 
+    * `create table test_smb_2(mid string,age_id string) CLUSTERED BY(mid) SORTED BY(mid) INTO 500 BUCKETS;`
 
 #### 关联优化
 
@@ -1706,7 +1760,7 @@ hive提供了一些分区时的优化方案：
         set hive.optimize.skewjoin.compiletime=true;
         -- 不合并，提升性能
         set hive.optimize.union.remove=true;
-        -- 如果Hi ve的底层走的是MapReduce,必须开启这个属性，才能实现不合并
+        -- 如果Hive的底层走的是MapReduce,必须开启这个属性，才能实现不合并
         set mapreduce.input.fileinputformat.input.dir.recursive=true;
         ```
 
