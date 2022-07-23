@@ -1404,7 +1404,16 @@ set hive.merge.smallfiles.avgsize=16000000;
 set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
 ```
 
+cdh中的配置
+
+![image-20220723092341088](hive.assets/image-20220723092341088.png)
+
 ### orc索引
+
+```
+SET hive.optimize.index.filter=true --开启 hive的自动使用索引  
+当然也可以将这个配置, 直接配置到cm的hive的配置窗口中, 进行统一配置
+```
 
 #### Row Group Index
 
@@ -1593,7 +1602,7 @@ SMB是针对bucket mapjoin的一种优化，用于大表join大表
 
 ```bash
 set hive.auto.convert.sortmerge.join=true;
-set hive.optimize.bucketmapjoin = true;
+set hive.optimize.bucketmapjoin=true;
 set hive.optimize.bucketmapjoin.sortedmerge = true;
 set hive.auto.convert.sortmerge.join.noconditionaltask=true;
 ```
@@ -1619,6 +1628,19 @@ set hive.auto.convert.sortmerge.join.noconditionaltask=true;
 >     2. 再开启一个mr程序对分组内的字段排序
 > 2. 方式二
 >     1. 开一个MR程序，在shuffle阶段做分组并排序
+>
+> select id, max(id) from stu group by id
+>
+> union
+>
+> select id, min(id) from stu group by id
+>
+> 1. 方式一
+>     1. 分别开启两个mr根据id分
+>     2. 最后reduce聚合
+> 2. 方式二
+>     1. 通过关联优化, 一个mr在shuffle阶段完成, 分组排序
+>     2. 两个sql共享上面mr shuffle的结果, 直接获取max(id)与min(id)即可
 >
 > 显然方式二性能更好，但是hive默认会选择方式一，可以开启关联优化，让hive尽可能的对这中有关联字段（分组排序都是id）进行优化，使用方式一运行。
 
@@ -1713,6 +1735,8 @@ hive提供了一些分区时的优化方案：
 
 2. 方案二
 
+    - **!!!使用该方案, 不能使用多列去重`select distinct id, name from stu`)**
+    
     - ```sql
         -- 开启group by数据倾斜自动负载均衡
         /*
@@ -1723,6 +1747,7 @@ hive提供了一些分区时的优化方案：
         */
         set hive.groupby.skewindata=true;
         ```
+    
 
 ##### Join导致数据倾斜
 
@@ -1741,9 +1766,31 @@ hive提供了一些分区时的优化方案：
 
 3. skew join
 
-    - 开启join数据倾斜自动负载均衡
+    - 开启join数据倾斜自动负载均衡, 可以同时开启编译期与运行期
 
-    - ```sql
+    - 编译期防止数据倾
+    
+        - 适用于明确知道那个key会出现数据倾斜
+    
+        - ```sql
+            set hive.optimize.skewjoin.compiletime=true;
+            /*
+            建表时指定倾斜字段
+            CREATE TABLE list_bucket_single (key STRING, value STRING)
+            -- 倾斜的字段和需要拆分的key值
+            SKEWED BY (key) ON (1,5,6)
+            --  为倾斜值创建子目录单独存放
+            [STORED AS DIRECTORIES];
+            说明:
+            当明确知道表中那些key的值有倾斜问题, 一般擦用编译期解决, 在建表的时候, 提前设置好对应值有倾斜即可, 这样在执行的时候, hive会直接将这些倾斜的key的值从这个MR排除掉, 单独找一个MR来处理即可
+            */
+            ```
+    
+        - 
+    
+    - 运行时防止数据倾斜
+    
+      - ```sql
         /*
         skewjoin是hive专门为了避免join阶段数据倾斜而设计的
         原理是将mapjoin与reducejoin合并，如果某个值出现了数据倾斜，就单独对数据倾斜的数据单独开启mapjoin
@@ -1754,7 +1801,7 @@ hive提供了一些分区时的优化方案：
         */
         -- 开启运行过程中skewjoin .
         set hive.optimize.skewjoin=true;
-        -- 如果这个key的出现的次数超过这个范围
+        -- 如果这个key的出现的次数超过这个范围, 认为有数据倾斜
         set hive.skew.join.key=100000;
         -- 在编译时判断是否会产生数据倾斜
         set hive.optimize.skewjoin.compiletime=true;
@@ -1763,6 +1810,48 @@ hive提供了一些分区时的优化方案：
         -- 如果Hive的底层走的是MapReduce,必须开启这个属性，才能实现不合并
         set mapreduce.input.fileinputformat.input.dir.recursive=true;
         ```
+    
+4. union优化
+
+    - ```sql
+        -- 在开启join优化后, 会在执行期间插入一个新的union操作, 此时开启union优化进一步优化
+        -- 此项配置一般和join的数据倾斜组合使用
+        -- 此项配置减少对Union all子查询中间结果的二次读写
+        set hive.optimize.union.remove=true;
+        ```
+
+
+#### 并行编译与执行
+
+并行编译
+
+> hive在同一时刻只能编译一个会话中SQL, 如果有多个会话一起来执行SQL, 此时出现排队的情况, 只有当这一个会话中SQL全部编译后, 才能编译另一个会话的SQL, 导致执行效率变慢
+
+一般在全局配置
+
+cdh配置如下图
+
+![image-20220723090454366](hive.assets/image-20220723090454366.png)
+
+```sql
+-- 是否开启并行编译 设置为true
+hive.driver.parallel.compilation=true;
+-- 最大允许同时有多少个SQL一起编译 设置为0表示无限制
+hive.driver.parallel.compilation.global.limit=3;
+```
+
+
+
+并行执行
+
+> 在运行一个SQL的时候, 这个SQL形成的执行计划中, 可能会被拆分为多个阶段, 当各个阶段之间没有依赖关系的时候, 可以尝试让多个阶段同时运行, 从而提升运行的效率, 这就是并行执行
+
+```sql
+-- 是否开启并行执行
+set hive.exec.parallel=true;  
+-- 最大允许并行执行的数量
+set hive.exec.parallel.thread.number=16;
+```
 
 #### 防止JVM内存溢出
 
@@ -1801,13 +1890,50 @@ set yarn.app.mapreduce.am.resource.cpu-vcores=4; -- MR ApplicationMaster占用�
 
 ```sql
 -- 动态分区配置
-set hive.exec.dynamic.partition=true;
-set hive.exec.dynamic.partition.mode=nonstrict;
+SET hive.exec.dynamic.partition=TRUE;
+SET hive.exec.dynamic.partition.mode=nonstrict;
+SET hive.exec.max.dynamic.partitions.pernode=10000;
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.created.files=150000;
+
 -- hive压缩
 set hive.exec.compress.intermediate=true;
 set hive.exec.compress.output=true;
+
 -- 写入时压缩生效
 set hive.exec.orc.compression.strategy=COMPRESSION;
+
+-- 分桶
+SET hive.enforce.bucketing=TRUE; -- 开启分桶支持, 默认就是true
+SET hive.enforce.sorting=TRUE; -- 开启强制排序
+
+-- 是否开启并行执行
+set hive.exec.parallel=true;
+-- 最大允许并行执行的数量
+set hive.exec.parallel.thread.number=16;
+-- 矢量化查询
+set hive.vectorized.execution.enabled=true;
+-- 关联优化器
+set hive.optimize.correlation=true;
+
+-- 读取零拷贝
+-- 在hive读取数据的时候, 只需要读取跟SQL相关的列的数据即可, 不使用列, 不进行读取, 从而减少读取数据, 提升效率
+-- 条件: 表的文件存储格式必须为ORC
+set hive.exec.orc.zerocopy=true;
+
+-- 针对性开启:
+-- 开启 group by combiner数据倾斜方案
+set hive.map.aggr=true;
+-- 开启groupby 负载均衡优化
+set hive.groupby.skewindata=true;
+-- join的编译期优化
+set hive.optimize.skewjoin.compiletime=true;
+-- 是否开启运行期倾斜解决join
+set hive.optimize.skewjoin=true;
+-- 当key出现多少个的时候, 认为有倾斜
+set hive.skewjoin.key=100000;
+-- union all优化
+set hive.optimize.union.remove=true;
 ```
 
 ##### 详细配置内存
