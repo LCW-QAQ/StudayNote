@@ -552,6 +552,14 @@ from user_info_transaction
 group by name;
 ```
 
+## 临时表
+
+从Hive1.1开始临时表可以存储在内存或SSD，使用hive.exec.temporary.table.storage参数进行配置，该参数有三种取值：memory、ssd、default。
+
+`set hive.exec.temporary.table.storage=default;`默认值，存储到磁盘中。
+
+`set hive.exec.temporary.table.storage = memory;`存储到内存中。
+
 ## 分区
 
 > 通过指定分区字段，将数据文件按字段分区，hdfs上以为`分区字段名=字段值`的形式组织数据。
@@ -648,7 +656,7 @@ from user_info t;
 > * 分桶
 >     * 分桶底层是分文件，通过key计算hash值取模桶数量后，存储到对应桶（文件）中。
 >     * 分桶操作在join字段为分桶字段时，可以通过bucket join（就是hash取模），提高join性能。
->     * 进行数据抽样时，生成随机值后取模桶数量，从而在分桶内取随机行。？？？TODO
+>     * 进行数据抽样时，通过对数据再分桶（默认按照bucket key散列，可以指定为rand()随机散列），只取部分桶的值，从而兼顾性能与随机性。
 >     * 在使用分桶字段等值查询时，通过hash取模，只需要扫描一个桶的数据，避免全表扫描。
 > * 分区
 >     * 分区底层是分目录，等值过滤分区是，只需扫描分区目录。
@@ -1028,6 +1036,9 @@ From t_usa_covid19_bucket;
 select *
 from t_usa_covid19_bucket
          tablesample (bucket 1 out of 5 on rand());
+         
+         
+-- !!! 注意spark sql并不是100%兼容hive sql，在spark sql中tablesample不支持on参数，默认就是随机散列的。
 
 -- tablesample (bucket x out of y [on column])
 -- x表示从第几个桶开始抽样, y=2时, 总桶数是6时, 会抽取 6 / 2个桶的数据, 以on指定的字段为key hash后得到结果
@@ -1036,11 +1047,29 @@ from t_usa_covid19_bucket
 -- x：从第几个桶开始抽取
 -- y：必须是总桶数的因数或倍数（自定义）
 -- z：共需抽取出的桶数（z=n/y）
--- on column：表示要抽样的列，使用rand()函数实现随机抽样。
-
+-- on column：表示要抽样的列，使用rand()函数实现随机抽样。如果不适用on rand()，在x,y固定的情况下，抽样数据固定。
+-- 事实上tablesample就是根据用户指定的y，再次将数据分散到y个桶中，因此x,y固定（on默认是按照bucket key）数据也会固定在同一个桶内，取到的数据自然也是一样的。使用on rand()后，就是随机散列了。
 select *
 from t_usa_covid19_bucket
          tablesample (bucket 1 out of 3 on state);
+
+
+-- tablesample详解
+SELECT * FROMbucketed_users 
+TABLESAMPLE(BUCKET 1 OUT OF 4 ON id); 
+
+-- 桶的个数从1开始计数。因此，前面的查询从4个桶的第一个中获取所有的用户。 对于一个大规模的、均匀分布的数据集，这会返回表中约四分之一的数据行。我们 也可以用其他比例对若干个桶进行取样(因为取样并不是一个精确的操作，因此这个 比例不一定要是桶数的整数倍)。
+
+说法一：
+	注：tablesample是抽样语句，语法：TABLESAMPLE(BUCKET x OUTOF y)
+
+    y必须是table总bucket数的倍数或者因子。hive根据y的大小，决定抽样的比例。例如，table总共分了64份，当y=32时，抽取(64/32=)2个bucket的数据，当y=128时，抽取(64/128=)1/2个bucket的数据。
+
+    x表示从哪个bucket开始抽取。例如，table总bucket数为32，tablesample(bucket 3 out of 16)，表示总共抽取（32/16=）2个bucket的数据，分别为第3个bucket和第（3+16=）19个bucket的数据。
+
+说法二：
+  	分桶语句中的分母表示的是数据将会被散列的桶的个数，
+	分子表示将会选择的桶的个数。
 ```
 
 ### 增强聚合函数
