@@ -1720,7 +1720,17 @@ from big_files_textfile;
 
 ### hive数据压缩
 
-> hadoop支持的压缩，hive也都支持。可以参考hadoop笔记。
+>hadoop支持的压缩，hive也都支持。可以参考hadoop笔记。
+
+MR支持的数据压缩
+
+| 压缩算法        | 实现类                                     | 文件扩展名   | 是否支持多文件 | 是否支持文件分割 |
+| --------------- | ------------------------------------------ | ------------ | -------------- | ---------------- |
+| DEFLATE（默认） | org.apache.hadoop.io.compress.DefaultCodec | .deflate     | 否             | 否               |
+| gzip            | org.apache.hadoop.io.compress.GzipCodec    | .gz          | 否             | 否               |
+| bzip2           | org.apache.hadoop.io.compress.BZip2Codec   | .bz2         | 否             | 是               |
+| LZO             | com.hadoop.compression.lzo.LzoCodec        | .lzo_deflate | 否             | 是               |
+| Lzop            | com.hadoop.compression.lzo.LzopCodec       | .lzo         | 否             | 是               |
 
 ```sql
 -- 开启hive中间传输数据压缩功能
@@ -1730,6 +1740,7 @@ set hive.exec.compress.intermediate=true;
 set mapreduce.map.output.compress=true;
 -- 3)设置mapreduce中map输出数据的压缩方式
 set mapreduce.map.output.compress.codec=org.apache.hadodp.io.compress.SnappyCodec;
+
 -- 开启Reduce输出阶段压缩
 -- 1)开启hive最终输出数据压缩功能
 set hive.exec.compress.output=true;
