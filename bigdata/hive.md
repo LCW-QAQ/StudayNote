@@ -173,6 +173,134 @@ Beeline --> HieveServer2 --> MetaStore --> Mysql
 
 连接后需要输入用户名，输入一个在hdfs中有数据权限的用户名即可，密码可以跳过直接回车。
 
+## 常见DDL
+
+Hive中的**ALTER DATABASE**语句用于更改与Hive中的数据库关联的元数据。
+
+```sql
+-- 更改数据库属性
+ALTER (DATABASE|SCHEMA) database_name SET DBPROPERTIES (property_name=property_value, ...);
+
+-- 更改数据库所有者
+ALTER (DATABASE|SCHEMA) database_name SET OWNER [USER|ROLE] user_or_role;
+
+-- 更改数据库位置
+ALTER (DATABASE|SCHEMA) database_name SET LOCATION hdfs_path;
+```
+
+Hive中的**DESCRIBE table**语句用于显示Hive中表的元数据信息。
+
+```sql
+describe formatted [db_name.]table_name;
+describe extended [db_name.]table_name;
+```
+
+从表中删除所有行。可以简单理解为清空表的所有数据但是保留表的元数据结构。如果HDFS启用了垃圾桶，数据将被丢进垃圾桶，否则将被删除。
+
+```sql
+TRUNCATE [TABLE] table_name;
+```
+
+### alter table
+
+```sql
+-- 1、更改表名
+ALTER TABLE table_name RENAME TO new_table_name;
+-- 2、更改表属性
+ALTER TABLE table_name SET TBLPROPERTIES (property_name = property_value, ... );
+-- 更改表注释
+ALTER TABLE student SET TBLPROPERTIES ('comment' = "new comment for student table");
+-- 3、更改SerDe属性
+ALTER TABLE table_name SET SERDE serde_class_name [WITH SERDEPROPERTIES (property_name = property_value, ... )];
+ALTER TABLE table_name [PARTITION partition_spec] SET SERDEPROPERTIES serde_properties;
+ALTER TABLE table_name SET SERDEPROPERTIES ('field.delim' = ',');
+-- 移除SerDe属性
+ALTER TABLE table_name [PARTITION partition_spec] UNSET SERDEPROPERTIES (property_name, ... );
+
+-- 4、更改表的文件存储格式 该操作仅更改表元数据。现有数据的任何转换都必须在Hive之外进行。
+ALTER TABLE table_name  SET FILEFORMAT file_format;
+-- 5、更改表的存储位置路径
+ALTER TABLE table_name SET LOCATION "new location";
+
+-- 6、更改列名称/类型/位置/注释
+CREATE TABLE test_change (a int, b int, c int);
+-- First change column a's name to a1.
+ALTER TABLE test_change CHANGE a a1 INT;
+-- Next change column a1's name to a2, its data type to string, and put it after column b.
+ALTER TABLE test_change CHANGE a1 a2 STRING AFTER b;
+-- The new table's structure is:  b int, a2 string, c int.
+-- Then change column c's name to c1, and put it as the first column.
+ALTER TABLE test_change CHANGE c c1 INT FIRST;
+-- The new table's structure is:  c1 int, b int, a2 string.
+-- Add a comment to column a1
+ALTER TABLE test_change CHANGE a1 a1 INT COMMENT 'this is column a1';
+
+-- 7、添加/替换列
+-- 使用ADD COLUMNS，您可以将新列添加到现有列的末尾但在分区列之前。
+-- REPLACE COLUMNS 将删除所有现有列，并添加新的列集。
+ALTER TABLE table_name ADD|REPLACE COLUMNS (col_name data_type,...);
+```
+
+### alter table partition
+
+分区的DDL操作
+
+#### add partition
+
+```sql
+-- 1、增加分区
+-- 一次添加一个分区
+ALTER TABLE table_name ADD PARTITION (dt='20170101') location
+    '/user/hadoop/warehouse/table_name/dt=20170101'; 
+
+-- 一次添加多个分区
+ALTER TABLE table_name ADD PARTITION (dt='2008-08-08', country='us') location '/path/to/us/part080808'
+                       PARTITION (dt='2008-08-09', country='us') location '/path/to/us/part080809';  
+```
+
+#### rename partition
+
+```sql
+-- 2、重命名分区
+ALTER TABLE table_name PARTITION partition_spec RENAME TO PARTITION partition_spec;
+ALTER TABLE table_name PARTITION (dt='2008-08-09') RENAME TO PARTITION (dt='20080809');
+```
+
+#### delete partition
+
+```sql
+--3、删除分区
+ALTER TABLE table_name DROP [IF EXISTS] PARTITION (dt='2008-08-08', country='us');
+ALTER TABLE table_name DROP [IF EXISTS] PARTITION (dt='2008-08-08', country='us') PURGE; -- 加上PURGE直接删除数据 不进垃圾桶
+```
+
+#### msck partition
+
+Hive将每个表的分区列表信息存储在其metastore中。
+
+但是，如果将新分区直接添加到HDFS（例如通过使用hadoop fs -put命令）或从HDFS中直接删除分区文件夹，则除非用户ALTER TABLE table_name ADD/DROP PARTITION在每个新添加的分区上运行命令，否则metastore（也就是Hive）将不会意识到分区信息的这些更改。
+
+用户可以通过`metastore check`即msck命令修复分区
+
+```sql
+-- 4、修复分区
+MSCK [REPAIR] TABLE table_name [ADD/DROP/SYNC PARTITIONS];
+```
+
+MSC命令的默认选项是“添加分区”。使用此选项，它将把HDFS上存在但元存储中不存在的所有分区添加到元存储中。DROP PARTITIONS选项将从已经从HDFS中删除的metastore中删除分区信息。SYNC PARTITIONS选项等效于调用ADD和DROP PARTITIONS。
+
+如果存在大量未跟踪的分区，则可以批量运行MSCK REPAIR TABLE，以避免OOME（内存不足错误）。
+
+#### alter partition
+
+```sql
+-- 5、修改分区
+-- 更改分区文件存储格式
+ALTER TABLE table_name PARTITION (dt='2008-08-09') SET FILEFORMAT file_format;
+-- 更改分区位置
+ALTER TABLE table_name PARTITION (dt='2008-08-09') SET LOCATION "new location";
+```
+
 ## 常见DML
 
 > 需要使用时，直接网上搜索即可
@@ -193,6 +321,11 @@ with dbproperties ('createdBy'='Allen');
 ### 建表
 
 ![hive_create_table_full_syntax](hive.assets/hive_create_table_full_syntax.png)
+
+* 蓝色字体是建表语法的关键字，用于指定某些功能。
+* []中括号的语法表示可选。
+* |表示使用的时候，左右语法二选一。
+* 建表语句中的语法顺序要和上述语法规则保持一致。
 
 ```sql
 CREATE TABLE [IF NOT EXISTS] [db_name.]table_name
@@ -215,7 +348,195 @@ row format delimited
     [lines terminated by char]
 ```
 
-### 视图与物化视图
+### Insert
+
+#### insert + select
+
+Hive中insert主要是结合select查询语句使用，将查询结果插入到表中，例如：
+
+```sql
+INSERT OVERWRITE TABLE tablename1 [PARTITION (partcol1=val1, partcol2=val2 ...) [IF NOT EXISTS]] select_statement1 FROM from_statement;
+
+INSERT INTO TABLE tablename1 [PARTITION (partcol1=val1, partcol2=val2 ...)] select_statement1 FROM from_statement;
+```
+
+#### multiple inserts
+
+multiple inserts可以翻译成为多次插入，多重插入，核心是：一次扫描，多次插入。其功能也体现出来了就是减少扫描的次数。
+
+```sql
+------------multiple inserts----------------------
+-- 当前库下已有一张表student
+select * from student;
+-- 创建两张新表
+create table student_insert1(sno int);
+create table student_insert2(sname string);
+-- 多重插入
+from student
+insert overwrite table student_insert1
+select num
+insert overwrite table student_insert2
+select name;
+```
+
+#### insert directory
+
+```sql
+-- 标准语法:
+INSERT OVERWRITE [LOCAL] DIRECTORY directory1
+    [ROW FORMAT row_format] [STORED AS file_format] (Note: Only available starting with Hive 0.11.0)
+SELECT ... FROM ...
+
+-- Hive extension (multiple inserts):
+FROM from_statement
+INSERT OVERWRITE [LOCAL] DIRECTORY directory1 select_statement1
+[INSERT OVERWRITE [LOCAL] DIRECTORY directory2 select_statement2] ...
+
+-- row_format
+: DELIMITED [FIELDS TERMINATED BY char [ESCAPED BY char]] [COLLECTION ITEMS TERMINATED BY char]
+[MAP KEYS TERMINATED BY char] [LINES TERMINATED BY char]
+```
+
+```sql
+-- 当前库下已有一张表student
+select * from student;
+
+-- 1、导出查询结果到HDFS指定目录下
+insert overwrite directory '/tmp/hive_export/e1' select * from student;
+
+-- 2、导出时指定分隔符和文件存储格式
+insert overwrite directory '/tmp/hive_export/e2' row format delimited fields terminated by ','
+stored as orc
+select * from student;
+
+-- 3、导出数据到本地文件系统指定目录下
+insert overwrite local directory '/root/hive_export/e1' select * from student;
+```
+
+## 常见数据类型
+
+![image-20220808144307958](hive.assets/image-20220808144307958.png)
+
+
+
+Hive支持的复杂数据类型如下图所示：
+
+![image-20220808144354064](hive.assets/image-20220808144354064.png)
+
+
+
+Hive支持隐式转换，下面列举了，哪些类型可以进行隐式转换：
+
+![image-20220808150317480](hive.assets/image-20220808150317480.png)
+
+更多数据类型查看官网：https://cwiki.apache.org/confluence/display/Hive/LanguageManual+Types
+
+## Show命令
+
+Show相关的语句提供了一种查询Hive metastore的方法。可以帮助用户查询相关信息。
+
+```sql
+-- 1、显示所有数据库 SCHEMAS和DATABASES的用法 功能一样
+show databases;
+show schemas;
+
+-- 2、显示当前数据库所有表/视图/物化视图/分区/索引
+show tables;
+SHOW TABLES [IN database_name]; --指定某个数据库
+
+-- 3、显示当前数据库下所有视图
+Show Views;
+SHOW VIEWS 'test_*'; -- show all views that start with "test_"
+SHOW VIEWS FROM test1; -- show views from database test1
+SHOW VIEWS [IN/FROM database_name];
+
+-- 4、显示当前数据库下所有物化视图
+SHOW MATERIALIZED VIEWS [IN/FROM database_name];
+
+-- 5、显示表分区信息，分区按字母顺序列出，不是分区表执行该语句会报错
+show partitions table_name;
+
+-- 6、显示表/分区的扩展信息
+SHOW TABLE EXTENDED [IN|FROM database_name] LIKE table_name;
+show table extended like student;
+
+-- 7、显示表的属性信息
+SHOW TBLPROPERTIES table_name;
+show tblproperties student;
+
+-- 8、显示表、视图的创建语句
+SHOW CREATE TABLE ([db_name.]table_name|view_name);
+show create table student;
+
+-- 9、显示表中的所有列，包括分区列。
+SHOW COLUMNS (FROM|IN) table_name [(FROM|IN) db_name];
+show columns  in student;
+
+-- 10、显示当前支持的所有自定义和内置的函数
+show functions;
+
+-- 11、Describe desc
+-- 查看表信息
+desc extended table_name;
+-- 查看表信息（格式化美观）
+desc formatted table_name;
+-- 查看数据库相关信息
+describe database database_name;
+```
+
+## 加载数据
+
+建表后，我们可以将数据手动上传到hive表的目录下。
+
+只要格式与建表时对应上，接下来就可以查询到结果。
+
+通过下面的语句建表：
+
+```sql
+create table tbl_user(
+    id int,
+    name string
+)
+row format delimited 
+fields terminated by ','
+collection items terminated by '-'
+map keys terminated ':';
+```
+
+hive默认存储路径在hdfs`/user/hive/warehouse/`
+
+`/user/hive/warehouse/数据库名.db/表名.db`
+
+```bash
+hadoop fs -put hot_hero_skin_price.txt /user/hive/warehouse/default.db/tbl_user.db
+```
+
+
+
+除了使用`hadoop fs`上传数据到hive表目录下，还可通过`load`命令加载hdfs或本地文件系统的数据。
+
+```sql
+-- load data语法
+-- filepath可以是相对路径、绝对路径、完整的URL（hdfs或其他受支持的分布式存储系统URL）
+LOAD DATA [LOCAL] INPATH 'filepath' [OVERWRITE] INTO TABLE tablename [PARTITION (partcol1=val1, partcol2=val2 ...)]
+LOAD DATA [LOCAL] INPATH 'filepath' [OVERWRITE] INTO TABLE tablename [PARTITION (partcol1=val1, partcol2=val2 ...)] [INPUTFORMAT 'inputformat' SERDE 'serde'] (3.0 or later)
+```
+
+
+
+加载本地数据：
+
+`overwrite`表示覆盖写入
+
+注意：加载本地数据时，需要保证hiveserver所在服务端拥有该文件（hiveserver执行上传命令，因此要求文件在hiveserver上）。
+
+`load data local inpath '/root/xuchang/myfile' overwrite into table tbl_user;`
+
+加载hdfs数据：
+
+`load data inpath '/usr/hive/users.txt' overwrite into table tbl_user;`
+
+## 视图与物化视图
 
 ```sql
 # 创建视图
@@ -321,6 +642,17 @@ from user_info t;
 > 分桶操作也可以提升查询性能，在查询的过滤条件是分桶字段时，直接走对应的分桶文件，而不需要全表扫描。同时在join操作时，如果两边的字段都是分桶字段，那么只会走两个桶的笛卡尔积，不会走全量数据。
 >
 > 数据竟可能分桶且排序，查询和基于分桶的随机抽样时，性能会更高。
+>
+> 分桶与分区的区别在于：
+>
+> * 分桶
+>     * 分桶底层是分文件，通过key计算hash值取模桶数量后，存储到对应桶（文件）中。
+>     * 分桶操作在join字段为分桶字段时，可以通过bucket join（就是hash取模），提高join性能。
+>     * 进行数据抽样时，生成随机值后取模桶数量，从而在分桶内取随机行。？？？TODO
+>     * 在使用分桶字段等值查询时，通过hash取模，只需要扫描一个桶的数据，避免全表扫描。
+> * 分区
+>     * 分区底层是分目录，等值过滤分区是，只需扫描分区目录。
+>     * 分区可以提升性能，在进行where条件时，由于hive对索引支持有限，默认情况下只能走全表扫描，性能极低。当进行表分区后，对分区字段的等值过滤，不会全表扫描，只会扫描该分区内的数据。
 
 ```sql
 # 开启基于桶的mapjoin
@@ -698,7 +1030,14 @@ from t_usa_covid19_bucket
          tablesample (bucket 1 out of 5 on rand());
 
 -- tablesample (bucket x out of y [on column])
--- x表示从第几个桶开始抽样, y=2时, 总桶数是5时, 会抽取 5 / 2个桶的数据, 以on指定的字段为key hash后得到结果
+-- x表示从第几个桶开始抽样, y=2时, 总桶数是6时, 会抽取 6 / 2个桶的数据, 以on指定的字段为key hash后得到结果
+-- 名词解释
+-- n：总桶数
+-- x：从第几个桶开始抽取
+-- y：必须是总桶数的因数或倍数（自定义）
+-- z：共需抽取出的桶数（z=n/y）
+-- on column：表示要抽样的列，使用rand()函数实现随机抽样。
+
 select *
 from t_usa_covid19_bucket
          tablesample (bucket 1 out of 3 on state);
