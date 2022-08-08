@@ -2345,6 +2345,337 @@ vim $HADOOP_HOME/etc/hadoop/fair-scheduler.xml
 
 详细配置参考bd、hadoop官网、CDH官网。
 
+## HadoopHA配置
+
+```
+1.修改Linux主机名
+2.修改IP
+3.修改主机名和IP的映射关系 /etc/hosts
+4.关闭防火墙
+5.ssh免登陆
+6.安装JDK，配置环境变量等
+7.注意集群时间要同步
+
+	集群部署节点角色的规划（7节点）
+	------------------
+	server01   namenode   zkfc
+	server02   namenode   zkfc
+	server03   resourcemanager
+	server04   resourcemanager
+	server05   datanode   nodemanager      zookeeper     journal node
+	server06   datanode   nodemanager      zookeeper     journal node 
+	server07   datanode   nodemanager      zookeeper     journal node 
+
+	------------------
+	
+	集群部署节点角色的规划（3节点）
+	------------------
+	server01   namenode    resourcemanager  zkfc   nodemanager  datanode   zookeeper   journal node
+	server02   namenode    resourcemanager  zkfc   nodemanager  datanode   zookeeper   journal node
+	server03   datanode    nodemanager     zookeeper    journal node
+	------------------
+---------------------------------------------------------------------------------------------------------------	
+安装步骤：
+	1.安装配置zooekeeper集群
+		1.1解压
+			tar -zxvf zookeeper-3.4.5.tar.gz -C /home/hadoop/app/
+		1.2修改配置
+			cd /home/hadoop/app/zookeeper-3.4.5/conf/
+			cp zoo_sample.cfg zoo.cfg
+			vim zoo.cfg
+			修改：dataDir=/home/hadoop/app/zookeeper-3.4.5/tmp
+			在最后添加：
+			server.1=hadoop05:2888:3888
+			server.2=hadoop06:2888:3888
+			server.3=hadoop07:2888:3888
+			保存退出
+			然后创建一个tmp文件夹
+			mkdir /home/hadoop/app/zookeeper-3.4.5/tmp
+			echo 1 > /home/hadoop/app/zookeeper-3.4.5/tmp/myid
+		1.3将配置好的zookeeper拷贝到其他节点(首先分别在hadoop06、hadoop07根目录下创建一个hadoop目录：mkdir /hadoop)
+			scp -r /home/hadoop/app/zookeeper-3.4.5/ hadoop06:/home/hadoop/app/
+			scp -r /home/hadoop/app/zookeeper-3.4.5/ hadoop07:/home/hadoop/app/
+			
+			注意：修改hadoop06、hadoop07对应/hadoop/zookeeper-3.4.5/tmp/myid内容
+			hadoop06：
+				echo 2 > /home/hadoop/app/zookeeper-3.4.5/tmp/myid
+			hadoop07：
+				echo 3 > /home/hadoop/app/zookeeper-3.4.5/tmp/myid
+	
+	2.安装配置hadoop集群
+		2.1解压
+			tar -zxvf hadoop-2.6.4.tar.gz -C /home/hadoop/app/
+		2.2配置HDFS（hadoop2.0所有的配置文件都在$HADOOP_HOME/etc/hadoop目录下）
+			#将hadoop添加到环境变量中
+			vim /etc/profile
+			export JAVA_HOME=/usr/java/jdk1.7.0_55
+			export HADOOP_HOME=/hadoop/hadoop-2.6.4
+			export PATH=$PATH:$JAVA_HOME/cluster1n:$HADOOP_HOME/cluster1n
+			
+			#hadoop2.0的配置文件全部在$HADOOP_HOME/etc/hadoop下
+			cd /home/hadoop/app/hadoop-2.6.4/etc/hadoop
+			
+			2.2.1修改hadoop-env.sh
+			export JAVA_HOME=/home/hadoop/app/jdk1.7.0_55
+
+###############################################################################
+				
+2.2.2修改core-site.xml
+<configuration>
+	<!-- HA集群名称，该值要和hdfs-site.xml中的配置保持一致 -->
+	<property>
+		<name>fs.defaultFS</name>
+		<value>hdfs://cluster1</value>
+	</property>
+
+	<!-- hadoop本地磁盘存放数据的公共目录 -->
+	<property>
+		<name>hadoop.tmp.dir</name>
+		<value>/export/data/ha-hadoop</value>
+	</property>
+
+	<!-- ZooKeeper集群的地址和端口-->
+	<property>
+		<name>ha.zookeeper.quorum</name>
+		<value>node1:2181,node2:2181,node3:2181</value>
+	</property>
+</configuration>
+
+###############################################################################
+				
+2.2.3修改hdfs-site.xml
+<configuration>
+	<!--指定hdfs的nameservice为cluster1，需要和core-site.xml中的保持一致 -->
+	<property>
+		<name>dfs.nameservices</name>
+		<value>cluster1</value>
+	</property>
+	
+	<!-- cluster1下面有两个NameNode，分别是nn1，nn2 -->
+	<property>
+		<name>dfs.ha.namenodes.cluster1</name>
+		<value>nn1,nn2</value>
+	</property>
+
+	<!-- nn1的RPC通信地址 -->
+	<property>
+		<name>dfs.namenode.rpc-address.cluster1.nn1</name>
+		<value>node1:8020</value>
+	</property>
+
+	<!-- nn1的http通信地址 -->
+	<property>
+		<name>dfs.namenode.http-address.cluster1.nn1</name>
+		<value>node1:50070</value>
+	</property>
+
+	<!-- nn2的RPC通信地址 -->
+	<property>
+		<name>dfs.namenode.rpc-address.cluster1.nn2</name>
+		<value>node2:8020</value>
+	</property>
+	
+	<!-- nn2的http通信地址 -->
+	<property>
+		<name>dfs.namenode.http-address.cluster1.nn2</name>
+		<value>node2:50070</value>
+	</property>
+
+	<!-- 指定NameNode的edits元数据在JournalNode上的存放位置 -->
+	<property>
+		<name>dfs.namenode.shared.edits.dir</name>
+		<value>qjournal://node1:8485;node2:8485;node3:8485/cluster1</value>
+	</property>
+	
+	<!-- 指定JournalNode在本地磁盘存放数据的位置 -->
+	<property>
+		<name>dfs.journalnode.edits.dir</name>
+		<value>/export/data/journaldata</value>
+	</property>
+
+	<!-- 开启NameNode失败自动切换 -->
+	<property>
+		<name>dfs.ha.automatic-failover.enabled</name>
+		<value>true</value>
+	</property>
+
+	<!-- 指定该集群出故障时，哪个实现类负责执行故障切换 -->
+	<property>
+		<name>dfs.client.failover.proxy.provider.cluster1</name>
+		<value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+	</property>
+
+	<!-- 配置隔离机制方法-->
+	<property>
+		<name>dfs.ha.fencing.methods</name>
+		<value>sshfence</value>
+	</property>
+	
+	<!-- 使用sshfence隔离机制时需要ssh免登陆 -->
+	<property>
+		<name>dfs.ha.fencing.ssh.private-key-files</name>
+		<value>/root/.ssh/id_rsa</value>
+	</property>
+	
+	<!-- 配置sshfence隔离机制超时时间 -->
+	<property>
+		<name>dfs.ha.fencing.ssh.connect-timeout</name>
+		<value>30000</value>
+	</property>
+</configuration>
+
+###############################################################################
+			
+2.2.4修改mapred-site.xml
+<configuration>
+    <!-- 指定mr框架为yarn方式 -->
+    <property>
+    <name>mapreduce.framework.name</name>
+    <value>yarn</value>
+    </property>
+</configuration>	
+
+###############################################################################
+			
+2.2.5修改yarn-site.xml
+<configuration>
+<!-- 开启RM高可用 -->
+<property>
+    <name>yarn.resourcemanager.ha.enabled</name>
+    <value>true</value>
+</property>
+<!-- 指定RM的cluster id -->
+<property>
+    <name>yarn.resourcemanager.cluster-id</name>
+    <value>yrc</value>
+</property>
+<!-- 指定RM的名字 -->
+<property>
+    <name>yarn.resourcemanager.ha.rm-ids</name>
+    <value>rm1,rm2</value>
+</property>
+<!-- 分别指定RM的地址 -->
+<property>
+    <name>yarn.resourcemanager.hostname.rm1</name>
+    <value>node1</value>
+</property>
+<property>
+    <name>yarn.resourcemanager.hostname.rm2</name>
+    <value>node2</value>
+</property>
+<!-- 指定zk集群地址 -->
+<property>
+    <name>yarn.resourcemanager.zk-address</name>
+    <value>node1:2181,node2:2181,node3:2181</value>
+</property>
+<property>
+    <name>yarn.nodemanager.aux-services</name>
+    <value>mapreduce_shuffle</value>
+</property>
+</configuration>
+			
+				
+2.2.6修改slaves(slaves是指定子节点的位置，因为要在hadoop01上启动HDFS、在hadoop03启动yarn，所以hadoop01上的slaves文件指定的是datanode的位置，hadoop03上的slaves文件指定的是nodemanager的位置)
+hadoop05
+hadoop06
+hadoop07
+
+2.2.7配置免密码登陆
+	#首先要配置hadoop00到hadoop01、hadoop02、hadoop03、hadoop04、hadoop05、hadoop06、hadoop07的免密码登陆
+	#在hadoop01上生产一对钥匙
+	ssh-keygen -t rsa
+	#将公钥拷贝到其他节点，****包括自己****
+	ssh-coyp-id hadoop00
+	ssh-coyp-id hadoop01
+	ssh-coyp-id hadoop02
+	ssh-coyp-id hadoop03
+	ssh-coyp-id hadoop04
+	ssh-coyp-id hadoop05
+	ssh-coyp-id hadoop06
+	ssh-coyp-id hadoop07
+
+	#注意：两个namenode之间要配置ssh免密码登陆  ssh远程补刀时候需要
+
+			
+			
+			
+###注意：严格按照下面的步骤!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+		2.5启动zookeeper集群（分别在hadoop05、hadoop06、tcast07上启动zk）
+			
+			bin/zkServer.sh start
+			#查看状态：一个leader，两个follower
+			bin/zkServer.sh status
+			
+		2.6手动启动journalnode（分别在在hadoop05、hadoop06、hadoop07上执行）
+			hadoop-daemon.sh start journalnode
+			#运行jps命令检验，hadoop05、hadoop06、hadoop07上多了JournalNode进程
+		
+		2.7格式化namenode
+			#在hadoop00上执行命令:
+			hdfs namenode -format
+			#格式化后会在根据core-site.xml中的hadoop.tmp.dir配置的目录下生成个hdfs初始化文件，
+			
+			把hadoop.tmp.dir配置的目录下所有文件拷贝到另一台namenode节点所在的机器
+			scp -r tmp/ hadoop02:/home/hadoop/app/hadoop-2.6.4/
+			
+			##也可以这样，建议hdfs namenode -bootstrapStandby
+		
+		2.8格式化ZKFC(在active上执行即可)
+			hdfs zkfc -formatZK
+		
+		2.9启动HDFS(在hadoop00上执行)
+			start-dfs.sh
+
+		2.10启动YARN   
+			start-yarn.sh
+			还需要手动在standby上手动启动备份的  resourcemanager
+			yarn-daemon.sh start resourcemanager
+
+		
+	到此，hadoop-2.6.4配置完毕，可以统计浏览器访问:
+		http://hadoop00:50070
+		NameNode 'hadoop01:9000' (active)
+		http://hadoop01:50070
+		NameNode 'hadoop02:9000' (standby)
+	
+	验证HDFS HA
+		首先向hdfs上传一个文件
+		hadoop fs -put /etc/profile /profile
+		hadoop fs -ls /
+		然后再kill掉active的NameNode
+		kill -9 <pid of NN>
+		通过浏览器访问：http://192.168.1.202:50070
+		NameNode 'hadoop02:9000' (active)
+		这个时候hadoop02上的NameNode变成了active
+		在执行命令：
+		hadoop fs -ls /
+		-rw-r--r--   3 root supergroup       1926 2014-02-06 15:36 /profile
+		刚才上传的文件依然存在！！！
+		手动启动那个挂掉的NameNode
+		hadoop-daemon.sh start namenode
+		通过浏览器访问：http://192.168.1.201:50070
+		NameNode 'hadoop01:9000' (standby)
+	
+	验证YARN：
+		运行一下hadoop提供的demo中的WordCount程序：
+		hadoop jar share/hadoop/mapreduce/hadoop-mapreduce-examples-2.4.1.jar wordcount /profile /out
+	
+	OK，大功告成！！！
+
+	
+			
+		
+测试集群工作状态的一些指令 ：
+       hdfs dfsadmin -report	 查看hdfs的各节点状态信息
+
+
+cluster1n/hdfs haadmin -getServiceState nn1		 获取一个namenode节点的HA状态
+
+scluster1n/hadoop-daemon.sh start namenode  单独启动一个namenode进程
+
+./hadoop-daemon.sh start zkfc   单独启动一个zkfc进程
+```
+
 ## 面试题
 
 ### 为什么块大小不能设置太小也不能设置太大
