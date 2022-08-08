@@ -251,6 +251,13 @@ log4j.rootCategory=WARN, console
 
 会疯狂输出日志, 设置级别为WARN 只输出警告和错误日志, 不要输出一堆废话.
 
+不想全局配置日志，可以再代码中配置，API大致如下：
+
+```kotlin
+val sc = JavaSparkContext(spark.sparkContext())
+sc.setLogLevel("warn")
+```
+
 
 
 使用rsync将配置分发到其他服务器
@@ -377,7 +384,7 @@ spark-submit --master spark://node1:7077 /opt/spark/examples/src/main/python/pi.
 >
 > 最大的影响是 会让它中断大约30秒左右.
 
-#### Yarn
+#### 两种运行模式
 
 确保spark-env.sh配置文件中有以下配置:
 
@@ -385,13 +392,45 @@ spark-submit --master spark://node1:7077 /opt/spark/examples/src/main/python/pi.
 - HADOOP_CONF_DIR
 - YARN_CONF_DIR
 
+##### Client模式
 
+![1609558928933](Spark.assets/1609558928933.png)
 
-pyspark
+```bash
+SPARK_HOME=/export/server/spark
+${SPARK_HOME}/bin/spark-submit \
+--master yarn  \
+--deploy-mode client \
+--driver-memory 512m \
+--driver-cores 1 \
+--executor-memory 512m \
+--num-executors 2 \
+--executor-cores 1 \
+--class org.apache.spark.examples.SparkPi \
+${SPARK_HOME}/examples/jars/spark-examples_2.12-3.0.1.jar \
+10
+```
 
-> client模式driver运行在客户端
+##### Cluster模式
+
+![1609559145839](Spark.assets/1609559145839.png)
+
+```bash
+SPARK_HOME=/export/server/spark
+${SPARK_HOME}/bin/spark-submit \
+--master yarn \
+--deploy-mode cluster \
+--driver-memory 512m \
+--executor-memory 512m \
+--num-executors 1 \
+--class org.apache.spark.examples.SparkPi \
+${SPARK_HOME}/examples/jars/spark-examples_2.12-3.0.1.jar \
+10
+```
+
+> client模式driver运行在客户端，可以看到控制台输出，通常用于开发调试。
 >
-> cluster模式driver运行在yarn分配的ApplicationMaster上
+> cluster模式driver运行在yarn分配的ApplicationMaster上，由yarn调度，想要查看输出需要去yarn上历史服务器上查看日志信息。
 
 ```bash
 # --deploy-mode 选项是指定部署模式, 默认是 客户端模式
@@ -403,9 +442,7 @@ pyspark --master yarn --deploy-mode client|cluster
 
 > 注意: 交互式环境 pyspark  和 spark-shell  无法运行 cluster模式
 
-
-
-spark-submit
+spark-submit通过`--deploy-mode`指定运行模式
 
 ```bash
 spark-submit --master yarn --deploy-mode client|cluster /opt/spark/examples/src/main/python/pi.py 10
@@ -506,7 +543,7 @@ Options:
 
 1. 使用yarn模式运行时，出现
 
-## Spark
+## Spark-Python
 
 ### RDD
 
@@ -1218,6 +1255,583 @@ spark.sql.shuffle.partitions则是只对SparkSQL有效
 1. repartition类的操作：比如repartition、repartitionAndSortWithinPartitions、coalesce等
 2. byKey类的操作：比如reduceByKey、groupByKey、sortByKey等
 3. join类的操作：比如join、cogroup等
+
+## Spark-Javaer
+
+偏向Javaer的笔记（实际上大量使用了kotlin）
+
+### 准备工作
+
+1. maven导包
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>my.lcw.learn.spark</groupId>
+    <artifactId>spark_javaer</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <kotlin.version>1.5.32</kotlin.version>
+    </properties>
+    <dependencies>
+        <!-- spark begin -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.13</artifactId>
+            <version>3.3.0</version>
+            <!-- 导包时注意！
+			由于我们是在自己电脑上开发测试，所以所有spark相关依赖运行时都需要。
+			请将scope指定为Runtime（不指定就行，默认就是保留到运行时）。
+			打包上传服务器是，不需要附带spark相关依赖，因为服务器上已经有了。
+ 			-->
+            <!--            <scope>provided</scope>-->
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-streaming_2.13</artifactId>
+            <version>3.3.0</version>
+            <!--            <scope>provided</scope>-->
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-core_2.13</artifactId>
+            <version>3.3.0</version>
+        </dependency>
+        <!--spark sql kafka-->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql-kafka-0-10_2.13</artifactId>
+            <version>3.3.0</version>
+        </dependency>
+        <!-- spark end -->
+
+        <!-- kafka连接数据源 -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-streaming-kafka-0-10_2.13</artifactId>
+            <version>3.3.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.30</version>
+        </dependency>
+
+        <!-- 中文分词 Begin -->
+        <dependency>
+            <groupId>com.hankcs</groupId>
+            <artifactId>hanlp</artifactId>
+            <version>portable-1.8.3</version>
+        </dependency>
+        <!-- 中文分词 End -->
+
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib-jdk8</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-test</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.0.0</version>
+                <configuration>
+                    <descriptorRefs>
+                        <descriptorRef>jar-with-dependencies</descriptorRef>
+                    </descriptorRefs>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <sourceDirs>
+                                <source>src/main/java</source>
+                                <source>src/main/scala</source>
+                            </sourceDirs>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>test-compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <jvmTarget>1.8</jvmTarget>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>testCompile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>testCompile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+### WordCount
+
+代码如果运行在windows上，需要访问hdfs，可以通过`System.setProperty("HADOOP_USER_NAME", "root")`指定用户名。
+
+```kotlin
+import org.apache.spark.SparkConf
+import org.apache.spark.api.java.JavaSparkContext
+
+class KtWordCount {
+    companion object {
+        @JvmStatic
+        fun main(args: Array<String>) {
+//            val (inputPath, outputPath) = args
+            val inputPath = "./a.txt"
+            val outputPath = "./a.out"
+            
+            val conf = SparkConf()
+                .setMaster("local[*]")
+                .setAppName("KtSpark")
+
+            val sc = JavaSparkContext(conf)
+            val file = sc.textFile(inputPath)
+            val resultRdd = file.flatMap { it.split(" ").iterator() }
+                .map { Pair(it, 1) }
+                .keyBy { it.first }
+                .reduceByKey { a, b -> Pair(a.first, b.second + a.second) }
+                .map { it._2 }
+
+            resultRdd.saveAsTextFile(outputPath)
+        }
+    }
+}
+```
+
+### SparkCore-RDD
+
+常见算子就不做介绍了
+
+#### 重分区操作
+
+![image-20220808223309316](Spark.assets/image-20220808223309316.png)
+
+#### 聚合操作
+
+```java
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+
+import java.util.Random;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class AggregationOperatorTest {
+    public static void main(String[] args) {
+        final SparkConf conf = new SparkConf()
+                .setMaster("local[*]")
+                .setAppName("WordCount");
+
+        final JavaSparkContext sc = new JavaSparkContext(conf);
+
+        final JavaRDD<Integer> rdd = sc.parallelize(Stream.generate(() -> new Random().nextInt(10))
+                .limit(10)
+                .collect(Collectors.toList()));
+        System.out.println(rdd.filter(it -> it > 8).collect());
+//        rdd.keyBy(it -> it)
+//                .groupByKey()
+//                .foreachPartition((VoidFunction<Iterator<Tuple2<Integer, Iterable<Integer>>>>) it -> {
+//                    it.forEachRemaining(System.out::println);
+//                });
+        rdd.keyBy(it -> it)
+                .max((o1, o2) -> o1._1.compareTo(o2._2));
+    }
+}
+```
+
+#### 关联操作
+
+```java
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import scala.Tuple2;
+import scala.Tuple3;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class JoinTest {
+    public static void main(String[] args) throws InterruptedException {
+        final SparkConf conf = new SparkConf()
+                .setMaster("local[*]")
+                .setAppName("WordCount");
+        final JavaSparkContext sc = new JavaSparkContext(conf);
+
+        final JavaRDD<Tuple3<String, Integer, Integer>> scores = sc.parallelize(Stream.of(
+                Tuple3.apply("张三", 1, 100),
+                Tuple3.apply("张三", 2, 90),
+                Tuple3.apply("张三", 3, 78)
+        ).collect(Collectors.toList()));
+
+        final JavaRDD<Tuple2<Integer, String>> subjects = sc.parallelize(Stream.of(
+                Tuple2.apply(1, "数学"),
+                Tuple2.apply(2, "语文"),
+                Tuple2.apply(3, "英语"),
+                Tuple2.apply(4, "英语")
+        ).collect(Collectors.toList()));
+
+        final List<Tuple3<String, String, Integer>> result1 = scores.keyBy(it -> it._2())
+            	// 内连接
+                .join(subjects.keyBy(it -> it._1))
+                .map(it -> {
+                    // 映射成 姓名 科目(替换id) 成绩
+                    return Tuple3.apply(it._2()._1()._1(), it._2()._2()._2(), it._2()._1()._3());
+                }).collect();
+        System.out.println(result1);
+
+        final List<Tuple3<String, String, Integer>> result2 = scores.keyBy(it -> it._2())
+            	// full join
+                .fullOuterJoin(subjects.keyBy(it -> it._1()))
+                .map(it -> {
+                    // 映射成 姓名 科目(替换id) 成绩
+                    return Tuple3.apply(it._2()._1().or(Tuple3.apply("", -1, -1))._1(),
+                            it._2()._2().or(Tuple2.apply(-1, ""))._2(),
+                            it._2()._1().or(Tuple3.apply("", -1, -1))._3());
+                }).collect();
+        System.out.println(result2);
+        
+        TimeUnit.SECONDS.sleep(30);
+    }
+}
+```
+
+#### 排序操作
+
+```java
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.storage.StorageLevel;
+
+import java.util.Comparator;
+import java.util.Random;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class SortTopNTest {
+    public static void main(String[] args) {
+        final SparkConf conf = new SparkConf()
+                .setMaster("local[*]")
+                .setAppName("WordCount");
+        final JavaSparkContext sc = new JavaSparkContext(conf);
+
+        final JavaRDD<Integer> rdd = sc.parallelize(Stream.generate(() -> new Random().nextInt(100))
+                .limit(10)
+                .collect(Collectors.toList()));
+
+        rdd.persist(StorageLevel.MEMORY_ONLY());
+
+        System.out.println(rdd.top(3, Comparator.reverseOrder()));
+        System.out.println(rdd.sortBy(it -> it, false, 1).collect()
+                .stream().limit(3).collect(Collectors.toList()));
+        System.out.println(rdd.keyBy(it -> it).sortByKey(Comparator.reverseOrder())
+                .map(it -> it._2).collect()
+                .stream().limit(3).collect(Collectors.toList()));
+
+        rdd.unpersist();
+    }
+}
+```
+
+#### RDD缓存/持久化
+
+![image-20220808224159920](Spark.assets/image-20220808224159920.png)
+
+![image-20220808224234838](Spark.assets/image-20220808224234838.png)
+
+#### RDD Checkpoint
+
+![image-20220808224514862](Spark.assets/image-20220808224514862.png)
+
+#### Checkpoint与缓存/持久化的区别
+
+1. 存储位置
+
+缓存/持久化数据存默认存在内存, 一般设置为内存+磁盘(普通磁盘)
+
+Checkpoint检查点：一般存储在HDFS
+
+2. 功能
+
+缓存/持久化：保证数据后续使用的效率高
+
+Checkpoint检查点：保证数据安全/也能一定程度上提高效率
+
+3. 对于依赖关系
+
+缓存/持久化：保留了RDD间的依赖关系
+
+Checkpoint检查点：不保留RDD间的依赖关系
+
+4. 开发中如何使用？
+
+对于计算复杂且后续会被频繁使用的RDD先进行缓存/持久化,再进行Checkpoint
+
+```java
+sc.setCheckpointDir("./ckp")//实际中写HDFS目录
+rdd.persist(StorageLevel.MEMORY_AND_DISK)
+rdd.checkpoint()
+//频繁操作rdd
+result.unpersist()//清空缓存
+```
+
+#### 共享变量
+
+##### 广播变量
+
+广播变量BroadcastVariables，可以在节点间共享。底层是变量拷贝到每个Executor上保存一份，每个节点的Worker从Executor上读取广播变量，减少了Driver想每个Task发送变量带来的IO损耗。
+
+![image-20220808225649833](Spark.assets/image-20220808225649833.png)
+
+##### 累加器
+
+如果我们需要维护一个全局累加值，使用不同变量是不行的，spark会将不同变量广播到所有Task，每个Task只会操作自己的变量。
+
+如果想要一个全局累加值，需要使用Spark提供的`Accumulators`，由Spark维护全局变量状态改变后的正确性。
+
+![image-20220808225920310](Spark.assets/image-20220808225920310.png)
+
+#### 外部数据源
+
+##### File
+
+```scala
+import java.lang
+
+import org.apache.commons.lang3.StringUtils
+import org.apache.spark
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.rdd.RDD
+import org.apache.spark.util.LongAccumulator
+import org.apache.spark.{SparkConf, SparkContext, broadcast}
+
+/**
+ * Author itcast
+ * Desc 演示RDD的外部数据源
+ */
+object RDDDemo12_DataSource{
+  def main(args: Array[String]): Unit = {
+    //TODO 0.env/创建环境
+    val conf: SparkConf = new SparkConf().setAppName("spark").setMaster("local[*]")
+    val sc: SparkContext = new SparkContext(conf)
+    sc.setLogLevel("WARN")
+
+    //TODO 1.source/加载数据/创建RDD
+    val lines: RDD[String] = sc.textFile("data/input/words.txt")
+
+    //TODO 2.transformation
+    val result: RDD[(String, Int)] = lines.filter(StringUtils.isNoneBlank(_))
+      .flatMap(_.split(" "))
+      .map((_, 1))
+      .reduceByKey(_ + _)
+
+    //TODO 3.sink/输出
+    result.repartition(1).saveAsTextFile("data/output/result1")
+    result.repartition(1).saveAsObjectFile("data/output/result2")
+    result.repartition(1).saveAsSequenceFile("data/output/result3")
+
+  }
+}
+```
+
+##### Mysql
+
+```kotlin
+import org.apache.spark.api.java.JavaSparkContext
+import org.apache.spark.api.java.function.MapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.SparkSession
+import scala.Tuple2
+import java.util.*
+
+/**
+ * spark读写mysql
+ */
+object ExternalDataSourceTest {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val spark = SparkSession.builder()
+            .master("local[*]")
+            .appName("ExternalDataSourceTest")
+            .orCreate
+        val sc = JavaSparkContext(spark.sparkContext())
+
+        val jdbcUrl = "jdbc:mysql://localhost:3336/test?useUnicode=true&characterEncoding=utf-8"
+        val tableName = "tbl_student"
+        val jdbcProp = Properties().apply {
+            putAll(
+                hashMapOf(
+                    "driver" to "com.mysql.cj.jdbc.Driver",
+                    "user" to "root",
+                    "password" to "tiger"
+                )
+            )
+        }
+
+        val dataSet = spark.read()
+            .jdbc(
+                jdbcUrl,
+                tableName,
+                jdbcProp
+            )
+        dataSet.printSchema()
+        dataSet.show()
+
+        dataSet.createTempView("students")
+
+        val ds = dataSet.sqlContext().sql(
+            """
+            select * from students where id > 2
+        """.trimIndent()
+        )
+        ds.show()
+
+        val ds2 = ds.map(MapFunction {
+            Tuple2.apply(
+                UUID.randomUUID().leastSignificantBits.toInt(),
+                it.getString(1) + "__" + "BY_SPARK"
+            )
+        }, Encoders.tuple(Encoders.INT(), Encoders.STRING()))
+
+        ds2.write()
+            .jdbc(jdbcUrl, "tbl_students_new", jdbcProp)
+    }
+}
+```
+
+### Spark内核
+
+#### 宽窄依赖
+
+##### 宽依赖
+
+宽依赖就是以出现shuffle的算子为分界线，将处理过程分为一个阶段Stage。
+
+- 子RDD的一个分区会依赖于父RDD的多个分区--错误
+- 父RDD的一个分区会被子RDD的多个分区所依赖--正确
+
+![1609810163383](Spark.assets/1609810163383.png)
+
+##### 窄依赖
+
+窄依赖就是不会出现shuffle的算子。
+
+- 子RDD的一个分区只会依赖于父RDD的1个分区--错误
+- 父RDD的一个分区只会被子RDD的1个分区所依赖 --正确
+
+![1609810224053](Spark.assets/1609810224053.png)
+
+##### 为什么区分宽窄依赖
+
+![1609810741374](Spark.assets/1609810741374.png)
+
+总结：
+
+窄依赖：并行化 + 容错
+
+宽依赖：进行阶段划分(shuffle后的阶段需要等待shuffle前的阶段计算完才能执行（依赖于前面的阶段全部执行完成）)
+
+#### DAG
+
+> 在图论中，如果一个图无法从任意节点出发经过任意条边后回到该节点，那么这个图就是一个有向无环图。
+>
+> 为什么需要DAG？
+>
+> 在Spark的计算过程中，很多计算都有先后顺序、依赖关系，必须Task进行排队，生成执行计划，哪些Task可以并行，哪些Task有依赖关系。
+>
+> 因此通过DAG图可以轻松表示这种复杂的依赖关系，每一个图节点就是一个任务，每一条边表示依赖关系。
+
+DAG：就是spark任务/程序执行的流程图！
+
+DAG的开始：从创建RDD开始
+
+DAG的结束：到Action结束算子
+
+一个Spark程序中有几个Action操作就有几个DAG！
+
+#### Stage
+
+Stage就是Spark为任务划分的阶段。
+
+为什么要划分阶段？
+
+Spark通过DAG来表示整个作业的执行流程，并通过Stage进行优化。
+
+由于宽依赖有shuffle，下游算子需要等待上有shuffle算子全部完成后才能执行，所以Spark在宽依赖出划分Stage。
+
+对于窄依赖，RDD之间没有shuffle，多个数据处理可以再同一台机器的内存中执行，所以多个窄依赖在Spark中被划分为一个Stage，如果划分成多个Stage在多台机器上执行，效率往往是更低的，涉及到跨进程、跨机器的数据传输。
+
+![1609811588694](Spark.assets/1609811588694.png)
+
+总结：
+
+Stage：是DAG中根据shuffle划分出来的阶段！
+
+前面的阶段执行完才可以执行后面的阶段！
+
+同一个阶段中的各个任务可以并行执行无需等待！
 
 ## SparkOnHive
 
