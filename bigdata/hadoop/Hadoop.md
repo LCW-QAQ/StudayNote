@@ -2156,6 +2156,195 @@ yarn工作简述：
 
 > 请参考atguigu笔记
 
+### Yarn调度器配置
+
+#### Capacity Scheduler
+
+容量调度器配置
+
+编辑yarn配置文件
+
+```bash
+vim $HADOOP_HOME/etc/hadoop/yarn-site.xml
+```
+
+将`yarn.resourcemanager.scheduler.class`选项值更改为`org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler`
+
+创建容量调度器配置文件
+
+```bash
+vim $/HADOOP_HOME/etc/hadoop/capacity-scheduler.xml
+```
+
+
+
+Capacity调度器默认有一个预定义的队列——root,所有的队列都是它的子队列。队列的分配支持层次化的配置，使用`.`来进行分割，比如`yarn.scheduler.capacity.<queue-path>.queues`
+
+下面是配置样例：
+
+```xml
+<property>
+  <name>yarn.scheduler.capacity.root.queues</name>
+  <value>a,b,c</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+
+<property>
+  <name>yarn.scheduler.capacity.root.a.queues</name>
+  <value>a1,a2</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+
+<property>
+  <name>yarn.scheduler.capacity.root.b.queues</name>
+  <value>b1,b2,b3</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+```
+
+##### 队列属性
+
+| 属性                                                   | 描述                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------ |
+| yarn.scheduler.capacity.???.capacity                   | 它是队列的资源容量占比(百分比)。系统繁忙时，每个队列都应该得到设置的量的资源；当系统空闲时，该队列的资源则可以被其他的队列使用。同一层的所有队列加起来必须是100%。 |
+| yarn.scheduler.capacity.???.maximum-capacity           | 队列资源的使用上限。由于系统空闲时，队列可以使用其他的空闲资源，因此最多使用的资源量则是该参数控制。默认是-1，即禁用。 |
+| yarn.scheduler.capacity.???.minimum-user-limit-percent | 每个任务占用的最少资源。比如，你设置成了25%。那么如果有两个用户提交任务，那么每个任务资源不超过50%。如果3个用户提交任务，那么每个任务资源不超过33%。如果4个用户提交任务，那么每个任务资源不超过25%。如果5个用户提交任务，那么第五个用户需要等待才能提交。默认是100，即不去做限制。 |
+| yarn.scheduler.capacity.???.user-limit-factor          | 每个用户最多使用的队列资源占比，如果设置为50.那么每个用户使用的资源最多就是50%。 |
+
+##### 运行和提交应用限制
+
+| 属性                                                         | 描述                                                         |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| yarn.scheduler.capacity.maximum-applications / yarn.scheduler.capacity.???.maximum-applications | 设置系统中可以同时运行和等待的应用数量。默认是10000.         |
+| yarn.scheduler.capacity.maximum-am-resource-percent / yarn.scheduler.capacity.???.maximum-am-resource-percent | 设置有多少资源可以用来运行app master，即控制当前激活状态的应用。默认是10%。 |
+
+##### 队列管理
+
+| 属性                                                     | 描述                                                         |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| yarn.scheduler.capacity.???.state                        | 队列的状态，可以使RUNNING或者STOPPED.如果队列是STOPPED状态，那么新应用不会提交到该队列或者子队列。同样，如果root被设置成STOPPED，那么整个集群都不能提交任务了。现有的应用可以等待完成，因此队列可以优雅的退出关闭。 |
+| yarn.scheduler.capacity.root.???.acl_submit_applications | 访问控制列表ACL控制谁可以向该队列提交任务。如果一个用户可以向该队列提交，那么也可以提交任务到它的子队列。 |
+| yarn.scheduler.capacity.root.???.acl_administer_queue    | 设置队列的管理员的ACL控制，管理员可以控制队列的所有应用程序。同样，它也具有继承性。 |
+
+注意：ACL的设置是`user1,user2 group1,group2`这种格式。如果是`*`则代表任何人。`空格`表示任何人都不允许。默认是`*`.
+
+##### 其他属性
+
+| 属性                                        | 描述                                                         |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| yarn.scheduler.capacity.resource-calculator | 资源计算方法，默认是`org.apache.hadoop.yarn.util.resource.DefaultResourseCalculator`,它只会计算内存。`DominantResourceCalculator`则会计算内存和CPU。 |
+| yarn.scheduler.capacity.node-locality-delay | 调度器尝试进行调度的次数。一般都是跟集群的节点数量有关。默认40（一个机架上的节点数） |
+
+调度器尝试进行调度的次数。一般都是跟集群的节点数量有关。默认40（一个机架上的节点数）
+
+
+
+配置完成后，访问`resource_manager_host:8088/scheduler`查看相关信息。
+
+##### 修改配置
+
+如果想要修改队列或者调度器的配置，可以修改。
+
+```bash
+vim $HADOOP_CONF_DIR/capacity-scheduler.xml
+```
+
+修改完成后，需要执行下面的命令：
+
+动态刷新配置，无需重启。
+
+```bash
+$HADOOP_YARN_HOME/bin/yarn rmadmin -refreshQueues
+```
+
+注意：
+
+- 队列不能被删除，只能新增。
+- 更新队列的配置需要是有效的值
+- 同层级的队列容量限制想加需要等于100%。
+
+#### Fair Scheduler
+
+公平调度器配置
+
+编辑yarn配置文件
+
+```bash
+vim $HADOOP_HOME/etc/hadoop/yarn-site.xml
+```
+
+```xml
+<!-- 指定公平调度器 -->
+<property>
+  <name>yarn.resourcemanager.scheduler.class</name>
+  <value>org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler</value>
+</property>
+<!--
+在未指定队列的情况下，是否使用【用户名】作为队列名
+当设置为true时，当`yellow`用户提交作业时，会自动创建并使用`root.yellow`队列
+当设置为false时，所有用户默认使用`root.default`队列
+当配置了`yarn.scheduler.fair.allocation.file`时，本配置将被忽略
+-->
+<property>
+  <name>yarn.scheduler.fair.user-as-default-queue</name>
+  <value>false</value>
+</property>
+<!-- 是否启用抢占 -->
+<property>
+  <name>yarn.scheduler.fair.preemption</name>
+  <value>true</value>
+</property>
+<!-- 触发抢占的阈值：资源使用量与总容量的占比 -->
+<property>
+  <name>yarn.scheduler.fair.preemption.cluster-utilization-threshold</name>
+  <value>0.7f</value>
+</property>
+<!-- 应用最大优先级 -->
+<property>
+  <name>yarn.cluster.max-application-priority</name>
+  <value>100</value>
+</property>
+```
+
+
+
+yarn-site.xml中有个yarn.scheduler.fair.allocation.file用来指定allocation file的路径这个allocation file描述了队列及其属性，以及某些策略默认值；（即自定义队列，可以自定义详细的资源使用限制）
+
+格式要求是 XML如果是相对路径，就去classpath(含Hadoop配置目录)找。该选项默认值：fair-scheduler.xml
+
+编辑`fair-scheduler.xml`
+
+```bash
+vim $HADOOP_HOME/etc/hadoop/fair-scheduler.xml
+```
+
+```xml
+<?xml version="1.0"?>
+<allocations>
+  <!-- 单个队列中ApplicationMaster资源的最大占比,取值0-1 -->
+  <queueMaxAMShareDefault>0.5</queueMaxAMShareDefault>
+  <!-- 单个队列最大资源的默认值 -->
+  <queueMaxResourcesDefault>8192mb,8vcores</queueMaxResourcesDefault>
+
+  <!-- 增加一个名为queue01的队列 -->
+  <queue name="queue01" >
+    <!-- 队列最小资源 -->
+    <minResources>1024mb,1vcores</minResources>
+    <!-- 队列最大资源 -->
+    <maxResources>20480mb,20vcores</maxResources>
+    <!-- 队列中ApplicationMaster占用资源的最大比例 -->
+    <maxAMShare>0.5</maxAMShare>
+    <!-- 队列权重，默认值为1.0 -->
+    <weight>5.0</weight>
+  </queue>
+</allocations>
+```
+
+详细配置参考bd、hadoop官网、CDH官网。
+
 ## 面试题
 
 ### 为什么块大小不能设置太小也不能设置太大
