@@ -1422,6 +1422,46 @@ spark.sql.shuffle.partitions则是只对SparkSQL有效
 </project>
 ```
 
+SparkUtils：避免重复编写SparkConf、SparkContext等配置代码。
+
+```kotlin
+import org.apache.spark.SparkConf
+import org.apache.spark.api.java.JavaSparkContext
+import org.apache.spark.sql.SparkSession
+
+object SparkUtils {
+    fun sparkRunCtx(
+        master: String,
+        appName: String,
+        block: (SparkSession, JavaSparkContext) -> Unit,
+        confBlock: SparkConf.() -> Unit
+    ) {
+        val spark = SparkSession.builder()
+            .master(master)
+            .appName(appName)
+            .config(SparkConf().apply { confBlock(this) })
+            .orCreate
+        apply { }
+        val sc = JavaSparkContext(spark.sparkContext())
+        sc.setLogLevel("warn")
+        block(spark, sc)
+    }
+
+    fun sparkRunCtx(
+        block: (SparkSession, JavaSparkContext) -> Unit
+    ) {
+        sparkRunCtx("local[*]", "KtSpark", block) {}
+    }
+
+    fun sparkRunCtx(
+        block: (SparkSession, JavaSparkContext) -> Unit,
+        configBlock: SparkConf.() -> Unit
+    ) {
+        sparkRunCtx("local[*]", "KtSpark", block, configBlock)
+    }
+}
+```
+
 ### WordCount
 
 代码如果运行在windows上，需要访问hdfs，可以通过`System.setProperty("HADOOP_USER_NAME", "root")`指定用户名。
@@ -1761,6 +1801,116 @@ object ExternalDataSourceTest {
 }
 ```
 
+#### 案例
+
+##### SogouQ
+
+数据网址：http://www.sogou.com/labs/resource/q.php
+
+搜狗实验室提供【用户查询日志(SogouQ)】数据分为三个数据集，大小不一样
+
+迷你版(样例数据, 376KB)：http://download.labs.sogou.com/dl/sogoulabdown/SogouQ/SogouQ.mini.zip
+
+精简版(1天数据，63MB)：http://download.labs.sogou.com/dl/sogoulabdown/SogouQ/SogouQ.reduced.zip
+
+完整版(1.9GB)：http://www.sogou.com/labs/resource/ftp.php?dir=/Data/SogouQ/SogouQ.zip
+
+上面的数据现在已经失效了（2022/08）
+
+
+
+中文分词
+
+```xml
+<dependency>
+    <groupId>com.hankcs</groupId>
+    <artifactId>hanlp</artifactId>
+    <version>portable-1.8.3</version>
+</dependency>
+```
+
+```kotlin
+import com.hankcs.hanlp.HanLP
+import org.apache.spark.api.java.JavaSparkContext
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.storage.StorageLevel
+
+object SogouCase {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val spark = SparkSession.builder()
+            .master("local[*]")
+            .appName("SogouCase")
+            .orCreate
+        val sc = JavaSparkContext(spark.sparkContext())
+
+        val lines = sc.textFile("./SogouQ.txt")
+
+        // 映射成搜索记录实体类
+        val recordsRdd = lines.map {
+            val fields = it.split(Regex("\\s+"))
+            Record(
+                time = fields[0],
+                id = fields[1],
+                key = fields[2],
+                url = fields.last()
+            )
+        }
+        // 持久化，后面要重复使用
+        recordsRdd.persist(StorageLevel.MEMORY_ONLY())
+
+        // 求Top10的热搜词
+        val topNWords = recordsRdd.flatMap {
+            // 进行分词
+            HanLP.segment(it.key).map { itt ->
+                Pair(it.id, itt.word)
+            }.iterator()
+        }.map { Pair(it, 1) }
+            .keyBy { it.first.second }
+        	// 求WordCount
+            .reduceByKey { a, b ->
+                Pair(a.first, a.second + b.second)
+            }
+            .map { it._2() }
+            .sortBy({ it.second }, false, 1)
+            .take(10)
+        println(topNWords)
+
+        val topNWordWithId = recordsRdd.flatMap {
+            // 进行分词
+            HanLP.segment(it.key).map { it.word }.iterator()
+        }.map { Pair(it, 1) }
+            .keyBy { it.first }
+            .reduceByKey { a, b ->
+                Pair(a.first, a.second + b.second)
+            }
+            .map { it._2 }
+            .sortBy({ it.second }, false, 1)
+            .take(10)
+
+        // 各个时间段的搜索热度
+        // val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        val timeHotResult = recordsRdd.map {
+//            LocalDateTime.parse("1970-01-01 ${it.time.substring(0, 5)}", timeFormatter) to 1
+            it.time.substring(0, 5) to 1
+        }.keyBy { it.first }
+            .reduceByKey { a, b ->
+                a.first to a.second + b.second
+            }.map { it._2 }
+            .sortBy({ it.second }, false, 1)
+            .take(10)
+        println(timeHotResult)
+    }
+}
+
+data class Record(
+    val time: String,
+    val id: String,
+    val key: String,
+    val url: String
+)
+```
+
 ### Spark内核
 
 #### 宽窄依赖
@@ -1833,11 +1983,1981 @@ Stage：是DAG中根据shuffle划分出来的阶段！
 
 同一个阶段中的各个任务可以并行执行无需等待！
 
+#### 基本名词
+
+1. Application：应用,就是程序员编写的Spark代码,如WordCount代码
+
+2. Driver：驱动程序,就是用来执行main方法的JVM进程,里面会执行一些Drive端的代码,如创建SparkContext,设置应用名,设置日志级别...
+
+3. SparkContext:Spark运行时的上下文环境,用来和ClusterManager进行通信的,并进行资源的申请、任务的分配和监控等
+
+4. ClusterManager：集群管理器,对于Standalone模式,就是Master,对于Yarn模式就是ResourceManager/ApplicationMaster,在集群上做统一的资源管理的进程
+
+5. Worker:工作节点,是拥有CPU/内存等资源的机器,是真正干活的节点
+
+6. Executor：运行在Worker中的JVM进程!
+
+7. RDD：弹性分布式数据集
+
+8. DAG：有向无环图,就是根据Action形成的RDD的执行流程图---静态的图
+
+9. Job：作业,按照DAG进行执行就形成了Job---按照图动态的执行
+
+10. Stage：DAG中,根据shuffle依赖划分出来的一个个的执行阶段!
+
+11. Task：一个分区上的一系列操作(pipline上的一系列流水线操作)就是一个Task,同一个Stage中的多个Task可以并行执行!(一个Task由一个线程执行),所以也可以这样说:Task(线程)是运行在Executor(进程)中的最小单位!
+12. TaskSet: 任务集,就是同一个Stage中的各个Task组成的集合!
+
+#### Job提交流程
+
+1. Driver启动后创建SparkContext
+2. Driver向ClusterManger（以下简称CM）注册，申请资源。
+3. CM找Worker分配资源并启动Executor
+4. Executor等待Task提交
+5. Driver构建DAG
+6. DAGSchduler划分Stage
+7. TaskScheduler提交Task
+8. Executor执行Task
+9. 注销资源
+
+### SparkStreaming
+
+![image-20220809090412189](Spark.assets/image-20220809090412189.png)
+
+SparkStreaming采用微批处理，因此处理数据时延迟较大，相对吞吐量更高。
+
+Flink采用的是基于事件的原生流式处理，毫秒级延迟。对于乱序事件流，提供事件时间与水位线语义以及精确一次。因此对于实时性较高的系统使用flink更为合适。
+
+#### SparkStreaming数据抽象
+
+##### DStream
+
+SparkStreaming将流式数据抽象为DStream
+
+![image-20220809091044003](Spark.assets/image-20220809091044003.png)
+
+对DStream的操作，实际上就是对底层RDD的操作。
+
+RDD之间存在依赖关系，DStream之间也存在依赖关系。
+
+#### SparkStreaming案例
+
+##### WordCount
+
+从TCP Socket数据源，实时消费数据，求WordCount。
+
+Centos上安装nc命令
+
+```bash
+yum install -y nc
+```
+
+```kotlin
+import org.apache.spark.SparkConf
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.Seconds
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-08-05
+ */
+object WordCountStreamingWithAllWindow {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val conf = SparkConf().apply {
+            setAppName("WordCountStreaming")
+            setMaster("local[*]")
+        }
+        // 第二个参参数指的是批处理延迟
+        val ssc = JavaStreamingContext(conf, Duration.apply(Seconds.apply(5).milliseconds()))
+        ssc.sparkContext().setLogLevel("error")
+        
+        // 连接socket
+        val lines = ssc.socketTextStream("192.168.150.121", 8000)
+        
+        // WordCount，处理上与rdd api基本一致
+        lines.flatMap { it.split(" ").iterator() }
+            .mapToPair { Tuple2.apply(it, 1) }
+            .reduceByKey { a, b ->
+                a + b
+            }.print()
+        
+        ssc.start()
+        ssc.awaitTermination()
+        ssc.stop(true, true)
+    }
+}
+```
+
+##### 状态管理
+
+![image-20220809091936249](Spark.assets/image-20220809091936249.png)
+
+SparkStreaming提供了时间窗口，我们可以再一个时间窗口内进行聚合操作。
+
+但是SparkStreaming时间窗口中的状态需要我们自己维护，Spark后来提供了StructuredStreaming可以自动维护状态（部分API）。
+
+
+
+现在我们向要统计所有单词累计出现的次数，需要使用updateStateByKey函数，维护每个Key的全局状态。
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.Optional
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.Seconds
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+object WordCountWithSlideWindowStreaming {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            // 后面给定批处理延迟（类似于滚动窗口，通过updateStateByKey聚合一个批次的数据）
+            val ssc = JavaStreamingContext(sc, Duration.apply(Seconds.apply(1).milliseconds()))
+            ssc.checkpoint("./temp.ckpt")
+
+            val lines = ssc.socketTextStream("192.168.150.121", 8000)
+            lines.flatMapToPair { it.split(" ").map { Tuple2.apply(it, 1) }.iterator() }
+                // updateStateByKey 可以通过为每个key维护一个全局状态，实现每个key的累加值
+                .updateStateByKey<Int> { values, state ->
+                    if (values.isNotEmpty()) {
+                        val sum = values.sum() + state.or(0)
+                        Optional.of(sum)
+                    } else {
+                        // Optional.empty() 之前这里写的是empty错了，我们要的是没有数据就返回之前的数据（有数据来了继续累加到之前的数据上）
+                        state
+                    }
+                }
+                // reduceByKeyAndWindow只计算当前窗口内的数据（上面设置了批处理延迟，每隔1秒就会reduce一个批次的数据，
+                // 窗口内的数据WordCount会叠加）
+                // .reduceByKeyAndWindow({ a, b -> a + b }, Duration(4000))
+                .print()
+
+            ssc.start()
+            ssc.awaitTermination()
+            ssc.stop(true, true)
+        }
+    }
+
+}
+```
+
+##### 状态恢复
+
+Spark提供了checkpoint来持久化程序状态，任务失败时，可以使用checkpoint恢复状态。
+
+**！！！下面的代码恢复检查点汇报LambdaSerialize错误，无法使用，原因未知**
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.SparkConf
+import org.apache.spark.api.java.JavaSparkContext
+import org.apache.spark.api.java.Optional
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+object WordCountCheckPointStreaming {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        if (false) { // 运行程序，保存检查点
+            SparkUtils.sparkRunCtx({ spark, sc ->
+                val ssc = JavaStreamingContext(sc, Duration.apply(5000))
+                // 保存检查点
+                ssc.checkpoint("./wordcount.ckpt")
+
+                val lines = ssc.socketTextStream("192.168.150.121", 8000)
+                lines.flatMapToPair {
+                    it.split(" ").map { Tuple2.apply(it, 1) }.iterator()
+                }.updateStateByKey<Int> { values, state ->
+                    if (values.isNotEmpty()) {
+                        val sum = values.sum() + state.or(0)
+                        Optional.of(sum)
+                    } else {
+                        state
+                    }
+                }.print()
+
+                ssc.start()
+                ssc.awaitTermination()
+                ssc.stop(true, true)
+            }, {
+                setJars(JavaSparkContext.jarOfClass(this.javaClass))
+            })
+        } else { // 从检查点恢复状态，继续运行
+            SparkUtils.sparkRunCtx { spark, sc ->
+                // 从检查点点恢复状态
+                val ssc = JavaStreamingContext.getOrCreate("./wordcount.ckpt") {
+                    val spark = SparkSession.builder()
+                        .master("local[*]")
+                        .appName("KtSpark")
+                        .config(SparkConf().apply {
+                            setJars(JavaSparkContext.jarOfClass(this.javaClass))
+                        }
+                        )
+                        .orCreate
+                    val sc = JavaSparkContext(spark.sparkContext())
+                    sc.setLogLevel("warn")
+                    val ssc = JavaStreamingContext(sc, Duration.apply(5000))
+                    // 保存检查点
+                    ssc.checkpoint("./wordcount2.ckpt")
+
+                    val lines = ssc.socketTextStream("192.168.150.121", 8000)
+                    lines.flatMapToPair {
+                        it.split(" ").map { Tuple2.apply(it, 1) }.iterator()
+                    }.updateStateByKey<Int> { values, state -> // 状态是检查点恢复的，因此可以继续在上次状态基础上累加
+                        if (values.isNotEmpty()) {
+                            val sum = values.sum() + state.or(0)
+                            Optional.of(sum)
+                        } else {
+                            state
+                        }
+                    }.print()
+
+                    ssc
+                }
+
+                ssc.start()
+                ssc.awaitTermination()
+                ssc.stop(true, true)
+            }
+        }
+    }
+}
+```
+
+##### 窗口计算
+
+时间窗口：在指定时间段、时间间隔内进行计算，这段时间我们称之为时间窗口。
+
+常见的时间窗口有：滚动窗口、滑动窗口。
+
+1. 滚动窗口是每隔多久，计算一次窗口内（间隔的时间段）的数据。
+    - 窗口长度为5s时：每隔5s计算窗口内的数据。
+
+2. 滑动窗口是每隔多久，计算最近多久的数据。
+    - 窗口长度为5s时，滑动间隔是1s：每隔1s，计算前5s的数据。
+
+![image-20220809114829183](Spark.assets/image-20220809114829183.png)
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.Optional
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.Seconds
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-08-05
+ */
+object WordCountWithSlideWindowStreaming {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+			// 第二个参数是批处理延迟
+            val ssc = JavaStreamingContext(sc, Duration.apply(Seconds.apply(1).milliseconds()))
+            ssc.checkpoint("./temp.ckpt")
+
+            val lines = ssc.socketTextStream("192.168.150.121", 8000)
+            lines.flatMapToPair { it.split(" ").map { Tuple2.apply(it, 1) }.iterator() }
+                // reduceByKeyAndWindow只计算当前窗口内的数据（上面设置了批处理延迟，每个1秒，就会reduce一个批次的数据，
+                // 窗口内的数据WordCount会叠加）
+                 .reduceByKeyAndWindow({ a, b -> a + b }, Duration(4000))
+                .print()
+
+            ssc.start()
+            ssc.awaitTermination()
+            ssc.stop(true, true)
+        }
+    }
+}
+```
+
+##### 计算TopN热搜词
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.Optional
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+object TopNStreaming {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val scc = JavaStreamingContext(sc, Duration(1000))
+            // 使用状态编程，必须指定checkpoint
+            scc.checkpoint("./temp.ckpt")
+
+            // 模拟Top3热搜词
+            val lines = scc.socketTextStream("192.168.150.121", 8000)
+            val resultRdd = lines.flatMapToPair { it.split(" ").map { Tuple2.apply(it, 1) }.iterator() }
+                .updateStateByKey<Int> { values, state ->
+                    if (values.isNotEmpty()) {
+                        val sum = values.sum() + state.or(0)
+                        Optional.of(sum)
+                    } else {
+                        state
+                    }
+                }
+
+            // DStream没有提供sort、order系列函数，我们可以通过transform函数操作底层rdd
+            resultRdd.transform { rdd ->
+                // 计算top3热搜词并输出
+                val top3Result = rdd.rdd().toJavaRDD().sortBy({ it._2() }, false, 1)
+                    .take(3)
+                println("============Tpp3============")
+                println(top3Result)
+                println("============Tpp3============")
+                rdd.rdd().toJavaRDD()
+            }.print()
+
+            scc.start()
+            scc.awaitTermination()
+            scc.stop(true, true)
+        }
+    }
+}
+```
+
+##### 自定义输出
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.Optional
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-08-05
+ */
+object TopNStreaming {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val scc = JavaStreamingContext(sc, Duration(1000))
+            // 使用状态编程，必须指定checkpoint
+            scc.checkpoint("./temp.ckpt")
+
+            // 模拟Top3热搜词
+            val lines = scc.socketTextStream("192.168.150.121", 8000)
+            val resultRdd = lines.flatMapToPair { it.split(" ").map { Tuple2.apply(it, 1) }.iterator() }
+//                .reduceByKeyAndWindow({ a, b -> a + b }, Duration(4000), Duration(2000))
+                // .window(Duration(4000), Duration(2000))
+                .updateStateByKey<Int> { values, state ->
+                    if (values.isNotEmpty()) {
+                        val sum = values.sum() + state.or(0)
+                        Optional.of(sum)
+                    } else {
+                        state
+                    }
+                }
+
+            // DStream没有提供sort、order系列函数，我们可以通过transform函数操作底层rdd
+            resultRdd.transform { rdd ->
+                // 计算top3热搜词并输出
+                val top3Result = rdd.rdd().toJavaRDD().sortBy({ it._2() }, false, 1)
+                    .take(3)
+                println("============Tpp3============")
+                println(top3Result)
+                println("============Tpp3============")
+                
+                rdd.rdd().toJavaRDD()
+            }.print()
+
+            resultRdd.foreachRDD { rdd, time ->
+                val timestamp = time.milliseconds()
+                // 输出到控制台
+                rdd.foreach { println(it) }
+
+                // 将数据存储到硬盘
+                rdd.coalesce(1).saveAsTextFile("./data/result-$timestamp")
+
+                // rdd.foreachPartition {
+                // jdbc连接, 输出都数据库
+                // 遍历每个分区的数据存储到外部数据库中
+                // }
+            }
+
+            scc.start()
+            scc.awaitTermination()
+            scc.stop(true, true)
+        }
+    }
+}
+```
+
+#### SparkStreaming整合Kafka
+
+> 流式数据的常见流程
+>
+> 流式数据 ---> (Flume)---->Kafka--->SparkStreaming/StructStreaming/Flink--->Redis/HBase/HDFS
+
+![image-20220809152325364](Spark.assets/image-20220809152325364.png)
+
+kafka快速回顾
+
+kafka通过zk来维护元数据信息（分区信息、主题信息）。
+
+Kakfa中通过主题来发布/订阅消息，所有生产与消费都要选择对应主题。
+
+Kafka中每个Consumer都对应一个消费组，每个消费组都有一个唯一`GROUP_ID`，对于`kafka-console-consumer`这种一个消费者事实上kafka为其生成了唯一消费组ID。
+
+Kafka通过分区机制，将消息数据分区到多台Broker节点，实现了存储上的扩展（有冗余备份），并且消费者内的不同消费者可以分别消费不同的分区，提高了并行度使消费消息速度很快速。（注意不能出现同一分区被消费者组内的多个消费者消费，但是一个消费者可以消费多个分区的数据）
+
+
+
+Kafka常用命令
+
+```bash
+#启动kafka
+/export/server/kafka/bin/kafka-server-start.sh -daemon /export/server/kafka/config/server.properties 
+
+#停止kafka
+/export/server/kafka/bin/kafka-server-stop.sh 
+
+#查看topic信息
+/export/server/kafka/bin/kafka-topics.sh --list --zookeeper node1:2181
+ 
+#创建topic
+/export/server/kafka/bin/kafka-topics.sh --create --zookeeper node1:2181 --replication-factor 1 --partitions 3 --topic test
+ 
+#查看某个topic信息
+/export/server/kafka/bin/kafka-topics.sh --describe --zookeeper node1:2181 --topic test
+ 
+#删除topic
+/export/server/kafka/bin/kafka-topics.sh --zookeeper node1:2181 --delete --topic test
+ 
+#启动生产者--控制台的生产者--一般用于测试
+/export/server/kafka/bin/kafka-console-producer.sh --broker-list node1:9092 --topic spark_kafka
+
+ 
+# 启动消费者--控制台的消费者
+/export/server/kafka/bin/kafka-console-consumer.sh --bootstrap-server node1:9092 --topic spark_kafka --from-beginning 
+```
+
+##### KafkaUtils
+
+![1609899922563](Spark.assets/1609899922563.png)
+
+![1609900032215](Spark.assets/1609900032215.png)
+
+![1609900089165](Spark.assets/1609900089165.png)
+
+##### 代码案例
+
+导入spark-streaming kafka相关依赖
+
+```xml
+<dependency>
+    <groupId>org.apache.spark</groupId>
+    <artifactId>spark-streaming-kafka-0-10_2.13</artifactId>
+    <version>3.3.0</version>
+</dependency>
+```
+
+###### 自动提交偏移量
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import org.apache.spark.streaming.kafka010.*
+
+object SparkKafkaConsumer {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ssc = JavaStreamingContext(sc, Duration(1000))
+
+            val kafkaParams: HashMap<String, Any> = hashMapOf(
+                // kafka集群地址
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG to "192.168.150.121:9092",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                // 必须指定GROUP_ID
+                ConsumerConfig.GROUP_ID_CONFIG to "test",
+                // 从主题最后位置开始读取
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG to "latest",
+                // 是否开启自动offset提交
+                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG to true,
+            )
+
+            // 创建直接流，无需依赖zk维护消费索引元数据信息
+            val ds = KafkaUtils.createDirectStream<String, String>(
+                ssc,
+                // 大多数情况都用这个策略，可以均匀的在所有程序中分配分区
+                LocationStrategies.PreferConsistent(),
+                // 订阅主题并传入配置信息
+                ConsumerStrategies.Subscribe(listOf("hello-world"), kafkaParams)
+            )
+
+            ds.foreachRDD { rdd ->
+                rdd.foreach {
+                    println(it)
+                }
+            }
+
+            ssc.start()
+            ssc.awaitTermination();
+            ssc.stop(true, true)
+        }
+    }
+}
+```
+
+###### 手动提交
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import org.apache.spark.streaming.kafka010.*
+
+object SparkKafkaConsumer {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ssc = JavaStreamingContext(sc, Duration(1000))
+
+            val kafkaParams: HashMap<String, Any> = hashMapOf(
+                // kafka集群地址
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG to "192.168.150.121:9092",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                // 必须指定GROUP_ID
+                ConsumerConfig.GROUP_ID_CONFIG to "test",
+                // 从主题最后位置开始读取
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG to "latest",
+                // 是否开启自动offset提交
+                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG to false,
+            )
+
+            // 创建直接流，无需依赖zk维护消费索引元数据信息
+            val ds = KafkaUtils.createDirectStream<String, String>(
+                ssc,
+                // 大多数情况都用这个策略，可以均匀的在所有程序中分配分区
+                LocationStrategies.PreferConsistent(),
+                // 订阅主题并传入配置信息
+                ConsumerStrategies.Subscribe(listOf("hello-world"), kafkaParams)
+            )
+
+            ds.foreachRDD { rdd ->
+                rdd.foreach {
+                    println(it)
+                }
+                // 获取偏移量
+                val offsetRanges = (rdd.rdd() as HasOffsetRanges).offsetRanges()
+                // 提交偏移量
+                (ds.inputDStream() as CanCommitOffsets).commitAsync(offsetRanges)
+                println("当前批次数据以消费，并提交偏移量")
+            }
+
+            ssc.start()
+            ssc.awaitTermination();
+            ssc.stop(true, true)
+        }
+    }
+}
+```
+
+###### 将Offset保存到MySQL
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import org.apache.spark.streaming.kafka010.*
+import java.sql.DriverManager
+
+/**
+ * spark streaming默认会将消费offset存储在CheckPoint中，防止丢数据（不能保证精确一次）
+ * 我们现在尝试使用mysql手动维护offset
+ */
+object KafkaOffsetSaveToMysql {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ssc = JavaStreamingContext(sc, Duration(1000))
+
+            val kafkaParams: HashMap<String, Any> = hashMapOf(
+                // kafka集群地址
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG to "192.168.150.121:9092",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG to StringDeserializer::class.java,
+                ConsumerConfig.GROUP_ID_CONFIG to "test",
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG to "latest",
+                // 是否开启自动offset提交
+                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG to false,
+            )
+
+            val offsetMap = OffsetUtils.loadOffsets("test", "hello-world")
+
+            // mysql中存储了偏移量信息，就从mysql中加载偏移量信息
+            // 否则不加载偏移量，通过spark checkpoint存储新的偏移量
+            val ds = if (offsetMap.isNotEmpty()) {
+                KafkaUtils.createDirectStream<String, String>(
+                    ssc,
+                    LocationStrategies.PreferConsistent(),
+                    ConsumerStrategies.Subscribe(listOf("hello-world"), kafkaParams, offsetMap)
+                )
+            } else {
+                KafkaUtils.createDirectStream<String, String>(
+                    ssc,
+                    LocationStrategies.PreferConsistent(),
+                    ConsumerStrategies.Subscribe(listOf("hello-world"), kafkaParams)
+                )
+            }
+
+            ds.foreachRDD { rdd ->
+                rdd.foreach {
+                    println(it)
+                }
+                // 获取偏移量
+                val offsetRanges = (rdd.rdd() as HasOffsetRanges).offsetRanges()
+                // 提交偏移量
+                // (ds.inputDStream() as CanCommitOffsets).commitAsync(offsetRanges)
+
+                // 将偏移量提交到mysql上
+                OffsetUtils.saveOffsets("test", offsetRanges)
+                println("当前批次数据以消费，并提交偏移量")
+            }
+
+            ssc.start()
+            ssc.awaitTermination();
+            ssc.stop(true, true)
+        }
+    }
+}
+
+object OffsetUtils {
+    /**
+     * 保存offset索引到MySQL中
+     */
+    fun saveOffsets(groupId: String, offsetRanges: Array<OffsetRange>) {
+        val conn = DriverManager.getConnection(
+            "jdbc:mysql://localhost:3306/test?useUnicode=true&characterEncoding=utf-8",
+            "root", "tiger"
+        )
+        conn.use {
+            // topic partition groupid 三个属性可以确定一个唯一的消费者
+            conn.prepareStatement(
+                """
+                replace into kafka_offset(`'topic'`, `'partition'`, `'groupid'`, `'offset'`) values(?, ?, ?, ?)
+            """.trimIndent()
+            ).use {
+                conn.autoCommit = false
+                runCatching {
+                    for (offset in offsetRanges) {
+                        it.setString(1, offset.topic())
+                        it.setInt(2, offset.partition())
+                        it.setString(3, groupId)
+                        it.setLong(4, offset.untilOffset())
+                        it.executeUpdate()
+                    }
+                }.onSuccess { conn.commit() }
+                    .onFailure {
+                        it.printStackTrace()
+                        conn.rollback()
+                    }
+            }
+        }
+    }
+
+    /**
+     * 加载MySQL中的Offset
+     */
+    fun loadOffsets(groupId: String, topic: String): HashMap<TopicPartition, Long> {
+        val conn = DriverManager.getConnection(
+            "jdbc:mysql://localhost:3306/test?useUnicode=true&characterEncoding=utf-8",
+            "root", "tiger"
+        )
+
+        // topic partition groupid 三个属性可以确定一个唯一的消费者
+        val offsetMap = hashMapOf<TopicPartition, Long>()
+
+        conn.use {
+            conn.prepareStatement(
+                """
+                select `'topic'`, `'partition'`, `'groupid'`, `'offset'` 
+                from kafka_offset
+                where `'topic'` = ? and `'groupid'` = ?
+            """.trimIndent()
+            ).use {
+                it.setString(1, topic)
+                it.setString(2, groupId)
+                val result = it.executeQuery()
+                result.use { cursor ->
+                    while (cursor.next()) {
+                        val topic = cursor.getString(1)
+                        val partition = cursor.getInt(2)
+                        val groupid = cursor.getString(3)
+                        val offset = cursor.getLong(4)
+                        offsetMap[TopicPartition(topic, partition)] = offset
+                    }
+                }
+            }
+        }
+
+        return offsetMap
+    }
+}
+```
+
+### SparkSql
+
+#### SparkSql数据抽象
+
+SparkCore的数据抽象：RDD。
+
+SparkStreaming的数据抽象：DStream，底层是RDD。
+
+SparkSQL的数据抽象：DataFrame和DataSet，底层是RDD。
+
+![1609917431602](Spark.assets/1609917431602.png)
+
+#### DataFrame
+
+DataFrame = RDD - 泛型  + Schema约束(指定了字段名和类型) + SQL操作 + 优化
+
+DataFrame就是在RDD的基础之上做了进一步的封装,支持SQL操作！
+
+DataFrame就是一个分布式表！
+
+#### DataSet
+
+DataSet = DataFrame + 泛型
+
+DataSet = RDD  + Schema约束(指定了字段名和类型) + SQL操作 + 优化
+
+DataSet在DataFrame的基础上增加了泛型约束，将原本一行数据Row，抽象为具体的实体类，方便了Java、Scala静态语言等的操作。
+
+DataSet就是一个分布式表！
+
+#### 将数据加载为DataFrame
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+
+object SqlHelloWorld {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.read().json("./data/person.json")
+
+            df.printSchema()
+            df.show()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### RDD to DataFrame
+
+##### 通过JavaBean转换
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+
+object RDDConvertDFByJavaBean {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val fileRdd = sc.textFile("./data/person.txt")
+            val personRdd = fileRdd.map {
+                val fields = it.split(Regex("\\s+"))
+                Person(fields[0], fields[1].toInt())
+            }
+
+            val df = spark.sqlContext().createDataFrame(personRdd, Person::class.java)
+            df.printSchema()
+            df.show()
+
+            spark.stop()
+        }
+    }
+
+    data class Person(val name: String, val age: Int)
+}
+```
+
+##### 通过Scheme转换
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.RowFactory
+import org.apache.spark.sql.types.*
+
+object RDDConvertDFBySchema {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val fileRdd = sc.textFile("./data/person.txt")
+            val personRdd = fileRdd.map {
+                val fields = it.split(Regex("\\s+"))
+                RowFactory.create(fields[0], fields[1].toInt())
+            }
+
+            val df = spark.createDataFrame(
+                personRdd, StructType()
+                    .add("name", DataTypes.StringType, true)
+                    .add("age", DataTypes.IntegerType, true)
+            )
+
+            df.printSchema()
+            df.show()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+##### RDD DataFrame DataSet转换
+
+```scala
+import org.apache.spark.SparkContext
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+
+object Demo03_RDD_DF_DS {
+  def main(args: Array[String]): Unit = {
+    //TODO 0.准备环境
+    val spark: SparkSession = SparkSession.builder().appName("sparksql").master("local[*]").getOrCreate()
+    val sc: SparkContext = spark.sparkContext
+    sc.setLogLevel("WARN")
+
+    //TODO 1.加载数据
+    val lines: RDD[String] = sc.textFile("data/input/person.txt")
+
+    //TODO 2.处理数据
+    val personRDD: RDD[Person] = lines.map(line => {
+      val arr: Array[String] = line.split(" ")
+      Person(arr(0).toInt, arr(1), arr(2).toInt)
+    })
+
+    //转换1:RDD-->DF
+    import spark.implicits._
+    val personDF: DataFrame = personRDD.toDF()
+    //转换2:RDD-->DS
+    val personDS: Dataset[Person] = personRDD.toDS()
+    //转换3:DF-->RDD,注意:DF没有泛型,转为RDD时使用的是Row
+    val rdd: RDD[Row] = personDF.rdd
+    //转换4:DS-->RDD
+    val rdd1: RDD[Person] = personDS.rdd
+    //转换5:DF-->DS
+    val ds: Dataset[Person] = personDF.as[Person]
+    //转换6:DS-->DF
+    val df: DataFrame = personDS.toDF()
+
+
+
+    //TODO 3.输出结果
+    personDF.printSchema()
+    personDF.show()
+    personDS.printSchema()
+    personDS.show()
+    rdd.foreach(println)
+    rdd1.foreach(println)
+
+    //TODO 4.关闭资源
+    spark.stop()
+  }
+  case class Person(id:Int,name:String,age:Int)
+}
+```
+
+#### Sql、DSL案例
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.types.Metadata
+import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.types.StructType
+
+object SqlQueryDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.read().schema(
+                StructType(
+                    arrayOf(
+                        StructField("name", DataTypes.StringType, false, Metadata.empty()),
+                        StructField("age", DataTypes.IntegerType, false, Metadata.empty())
+                    )
+                )
+            ).json("./data/person.json")
+
+            df.printSchema()
+            df.show()
+
+            df.createTempView("person")
+
+            // sql style
+			// 查询年龄>20的人
+            df.sqlContext().sql("select * from person where age > 20")
+                .show()
+			// 查询每个name出现的次数
+            df.sqlContext().sql("select name, count(1) from person group by name")
+                .show()
+			// 查询每个年龄，有哪些人，name去重（案例：年龄1=>[张三，李四，王五]）
+            df.sqlContext().sql("select age, concat_ws(',', collect_set(name)) from person group by age")
+                .show()
+
+            // dsl style
+			// 查询年龄>20的人
+            df.select("*").where("age > 20")
+                .show()
+			// 查询每个name出现的次数
+            df.groupBy("name")
+                .agg(
+                    hashMapOf(
+                        "name" to "count"
+                    )
+                )
+                .withColumnRenamed("count(name)", "cnt")
+                .select("name", "cnt")
+                .show()
+			// 查询每个年龄，有哪些人，name去重（案例：年龄1=>[张三，李四，王五]）
+            df.groupBy("age")
+                // 使用spark提供的静态函数，相比HashMap与Tuple更加方便
+                .agg(F.collect_set("name").`as`("names"))
+                .select("age", "names")
+                .show()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### WordCountBySql
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+
+object SqlWordCount {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ds = spark.read().textFile("./a.txt")
+
+            ds.printSchema()
+            ds.show()
+
+            val wordDs = ds.flatMap(
+                FlatMapFunction { it.split(Regex("\\s+")).iterator() },
+                Encoders.STRING()
+            )
+            wordDs.show()
+
+            wordDs.createTempView("words")
+
+            // sql style
+            wordDs.sqlContext().sql(
+                """
+                select value word, count(*) as cnt
+                from words
+                group by value
+                order by cnt desc
+            """.trimIndent()
+            ).show()
+
+            // dsl style
+            wordDs.groupBy("value")
+                .count()
+                .orderBy(wordDs.col("count").desc())
+                .show()
+        }
+    }
+}
+```
+
+#### 多数据源
+
+以输出到Mysql为例
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.SaveMode
+import java.util.*
+
+object OutDataSource {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ds = spark.read().textFile("./a.txt")
+
+            ds.printSchema()
+            ds.show()
+
+            val wordDs = ds.flatMap(
+                FlatMapFunction { it.split(Regex("\\s+")).iterator() },
+                Encoders.STRING()
+            )
+            wordDs.show()
+
+            wordDs.createTempView("words")
+
+            // sql style
+            val wordCountResult = wordDs.sqlContext().sql(
+                """
+                select value word, count(*) as cnt
+                from words
+                group by value
+                order by cnt desc
+            """.trimIndent()
+            )
+
+            // 输出到一个分区
+            wordCountResult.repartition(1).write().mode(SaveMode.Overwrite)
+                .jdbc(
+                    "jdbc:mysql://localhost:3336/test?useUnicode=true&characterEncoding=utf-8",
+                    "word_count", Properties().apply {
+                        putAll(
+                            hashMapOf(
+                                "user" to "root",
+                                "password" to "tiger"
+                            )
+                        )
+                    }
+                )
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### 案例--电影数据分析
+
+数据结构如下：
+
+```
+196	242	3	881250949
+186	302	3	891717742
+22	377	1	878887116
+244	51	2	880606923
+166	346	1	886397596
+```
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.Column
+import org.apache.spark.sql.RowFactory
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.Round
+import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.types.Metadata
+import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.types.StructType
+
+object MovieAnalysis {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ds = spark.read().textFile("./data/input/rating_100k.data")
+
+            // 获取电影评分Top10，要求电影的评分次数>200
+            val moveRdd = ds.toJavaRDD().map {
+                val fields = it.split(Regex("\\s+"))
+                RowFactory.create(
+                    fields[0].toInt(),
+                    fields[1].toInt(),
+                    fields[2].toInt(),
+                    fields[3].toLong()
+                )
+            }
+
+            val movieDf = spark.createDataFrame(
+                moveRdd.rdd(),
+                StructType(
+                    arrayOf(
+                        StructField("uid", DataTypes.IntegerType, false, Metadata.empty()),
+                        StructField("movieId", DataTypes.IntegerType, false, Metadata.empty()),
+                        StructField("score", DataTypes.IntegerType, false, Metadata.empty()),
+                        StructField("time", DataTypes.LongType, false, Metadata.empty()),
+                    )
+                )
+            )
+
+            movieDf.printSchema()
+            movieDf.show()
+
+            movieDf.createTempView("movies")
+
+            // 需求求评分次数>200的电影平均分Top3
+            // sql
+            movieDf.sqlContext().sql(
+                """
+                with q1 as (
+                select
+                    movieId, round(avg(score), 2) avg_score
+                from movies
+                group by movieId
+                having count(*) > 200)
+                select * from q1 order by avg_score desc limit 10
+            """.trimIndent()
+            ).show()
+
+            // dsl
+            movieDf.groupBy("movieId")
+                .agg(
+                    hashMapOf(
+                        "score" to "avg",
+                        "movieId" to "count"
+                    )
+                ).withColumnRenamed("avg(score)", "avg_score")
+                .withColumnRenamed("count(movieId)", "commentCnt")
+                .withColumn(
+                    "avg_score", Column(
+                        Round(
+                            Column("avg_score").expr(),
+                            Literal(2, DataTypes.IntegerType)
+                        )
+                    ).alias("avg_score")
+                )
+                .where("commentCnt > 200")
+                .orderBy(Column("avg_score").desc())
+                .select("movieId", "avg_score")
+                .limit(10)
+                .show()
+        }
+    }
+
+    data class MovieRecord(
+        val uid: Int,
+        val movieId: Int,
+        val commentCnt: Int,
+        val time: Long
+    )
+}
+```
+
+#### 自定义UDF函数
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.api.java.UDF1
+import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.functions as F
+
+object UserUDFDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            // 注册udf函数，实现字符串转大写
+            // 可以使用专门为Java提供的API注册UDF
+            // spark.udf().registerJava("my_upper", "", DataTypes.StringType)
+            // 注册JavaUDAF函数，详细使用查看代码文档
+            // spark.udf().registerJavaUDAF("", "")
+            val udfMyUpper = UDF1 { data: String ->
+                data.uppercase()
+            }
+            spark.udf().register("my_upper", udfMyUpper, DataTypes.StringType)
+
+            val fileRdd = spark.read().textFile("./data/input/udf.txt")
+                .toDF("value")
+
+            // dsl style
+            fileRdd
+                .select(F.callUDF("my_upper", fileRdd.col("value")))
+                .show()
+
+            fileRdd.createTempView("df")
+            // sql style
+            spark.sql(
+                """
+                select
+                    my_upper(value)
+                from df
+            """.trimIndent()
+            ).show()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### SparkSql整合Hive
+
+##### Spark-Shell
+
+1. 注意:需要先启动Hive的metastore
+
+`nohup /export/server/hive/bin/hive --service metastore &`
+
+2. 把hive的配置文件hive-site.xml拷贝到spark/conf目录,把mysql驱动上传到spark/jars里面--node1 (也可以把配置文件和jar分发到其他机器,在其他机器使用SparkSQL操作hive)
+
+3. 启动spark/bin下的spark-sql命令行
+
+`/export/server/spark/bin/spark-sql`
+
+在命令行内编写spark-sql即可（95%兼容hive-sql）
+
+##### SparkSql代码整合
+
+注意：需要先启动Hive的metastore 
+
+`nohup /export/server/hive/bin/hive --service metastore &`
+
+```python
+from pyspark.sql import SparkSession
+
+if __name__ == '__main__':
+    # 如果配置了$SPARK_HOME/conf下的hive-site.xml下面就不需要配置了, 只需要enableHiveSupport开启hive
+    spark = SparkSession.builder \
+        .appName("test") \
+        .master("local[*]") \
+        .config("spark.sql.warehouse.dir", "hdfs://hadoop-1:8020/user/hive/warehouse") \
+        .config("hive.metastore.uris", "thrift://hadoop-1:9083") \
+        .enableHiveSupport() \
+        .getOrCreate()
+
+    spark.sql("""
+        show databases; 
+        """).show()
+
+    spark.sql("""
+    use default;
+    """)
+    spark.sql("""show tables;""").show()
+    spark.sql("""
+    create table if not exists person(id int, name string) row format delimited fields terminated by ' '
+    """).show()
+    
+    spark.sql("""show tables;""")
+
+    spark.sql("""insert into person(id, name) values(1001, 'ZhangSan')""").show()
+    spark.sql("""select * from person""").show()
+
+    spark.stop()
+```
+
+##### JDBC访问Hive
+
+1. 导入依赖
+
+```xml
+<dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-hive-thriftserver_2.12</artifactId>
+            <version>${spark.version}</version>
+</dependency>
+```
+
+2. 代码
+
+```scala
+package cn.itcast.sql
+
+import java.sql.{Connection, DriverManager, PreparedStatement, ResultSet}
+
+/**
+ * Author itcast
+ * Desc 演示使用jdbc访问SparkSQL的ThriftServer
+ */
+object Demo10_ThriftServer{
+  def main(args: Array[String]): Unit = {
+    //0.加载驱动
+    Class.forName("org.apache.hive.jdbc.HiveDriver")
+
+    //1.获取连接
+    val conn: Connection = DriverManager.getConnection(
+      "jdbc:hive2://node2:10000/default", //看上去像是在使用Hive的server2,本质上使用Spark的ThriftServer
+      "root",
+      "123456"
+    )
+
+    //2.编写sql
+    val sql = """select id,name,age from person"""
+
+    //3.获取预编译语句对象
+    val ps: PreparedStatement = conn.prepareStatement(sql)
+
+    //4.执行sql
+    val rs: ResultSet = ps.executeQuery()
+
+    //5.处理结果
+    while (rs.next()){
+      val id: Int = rs.getInt("id")
+      val name: String = rs.getString("name")
+      val age: Int = rs.getInt("age")
+      println(s"id=${id},name=${name},age=${age}")
+    }
+
+    //6.关闭资源
+    if(rs != null) rs.close()
+    if(ps != null) ps.close()
+    if(conn != null) conn.close()
+  }
+}
+```
+
+### StructuredStreaming
+
+#### SparkStreaming的不足
+
+1. 基于微批,延迟高不能做到真正的实时
+
+2. DStream基于RDD,不直接支持SQL
+
+3. 流批处理的API应用层不统一,(流用的DStream-底层是RDD,批用的DF/DS/RDD)
+
+4. 不支持EventTime事件时间
+
+- EventTime事件时间 :事件真正发生的事件
+- PorcessingTime处理时间:事件被流系统处理的时间
+- IngestionTime摄入时间:事件到底流系统的时间
+- 如: 一条错误日志10月1日,23:59:00秒产生的(事件时间),因为网路延迟,到10月2日 00:00:10到达日志处理系统(摄入时间),10月2日 00:00:20被流系统处理(处理时间)
+- 如果要统计10月1日的系统bug数量,那么SparkStreaming不能正确统计,因为它不支持事件时间
+
+5. 数据的Exactly-Once(恰好一次语义)需要手动实现
+
+- 数据的一致性语义
+- 最多一次
+- 恰好一次--是我们的目标,SparkStreaming如果要实现恰好一次,需要手动维护偏移量+其他操作
+- 最少一次
+
+#### StructuredStreaming介绍
+
+1. 使SparkSql API支持流式处理
+2. 流批一体API
+3. 增加了事件时间、处理时间、摄入时间等语义。
+4. 增加了Continuous Processing毫秒级处理（真正的流式处理而不是批处理）
+
+#### 数据源
+
+官网指南：https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html
+
+- **File source** - Reads files written in a directory as a stream of data. Files will be processed in the order of file modification time. If `latestFirst` is set, order will be reversed. Supported file formats are text, CSV, JSON, ORC, Parquet. See the docs of the DataStreamReader interface for a more up-to-date list, and supported options for each file format. Note that the files must be atomically placed in the given directory, which in most file systems, can be achieved by file move operations.
+- **Kafka source** - Reads data from Kafka. It’s compatible with Kafka broker versions 0.10.0 or higher. See the [Kafka Integration Guide](https://spark.apache.org/docs/latest/structured-streaming-kafka-integration.html) for more details.
+- **Socket source (for testing)** - Reads UTF8 text data from a socket connection. The listening server socket is at the driver. Note that this should be used only for testing as this does not provide end-to-end fault-tolerance guarantees.
+- **Rate source (for testing)** - Generates data at the specified number of rows per second, each output row contains a `timestamp` and `value`. Where `timestamp` is a `Timestamp` type containing the time of message dispatch, and `value` is of `Long` type containing the message count, starting from 0 as the first row. This source is intended for testing and benchmarking.
+- **Rate Per Micro-Batch source (for testing)** - Generates data at the specified number of rows per micro-batch, each output row contains a `timestamp` and `value`. Where `timestamp` is a `Timestamp` type containing the time of message dispatch, and `value` is of `Long` type containing the message count, starting from 0 as the first row. Unlike `rate` data source, this data source provides a consistent set of input rows per micro-batch regardless of query execution (configuration of trigger, query being lagging, etc.), say, batch 0 will produce 0~999 and batch 1 will produce 1000~1999, and so on. Same applies to the generated time. This source is intended for testing and benchmarking.
+
+Kafka数据源开发时使用最多
+
+File文件数据源偶尔使用
+
+Socket与Rate只在开发测试时使用
+
+##### Socket
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.functions as F
+
+object SourceSocketDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.readStream()
+                .format("socket")
+//                .option("host", "192.168.150.121")
+                .option("host", "dev.server")
+                .option("port", 8000)
+                .load()
+
+            // 将Dataset<Row>转换成Dataset<String>
+            val ds = df.`as`(Encoders.STRING())
+            val resultDs = ds.flatMap(FlatMapFunction { it.split(" ").iterator() }, Encoders.STRING())
+                .groupBy("value")
+                .count()
+                .orderBy(F.col("count").desc())
+
+            resultDs.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Complete())
+                .start().awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+##### Rate
+
+Rate流可以生成随机数，用于测试。
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.streaming.OutputMode
+
+/**
+ * Rate流主要用于测试可以生成随机数据
+ */
+object RateSourceDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.readStream()
+                .format("rate")
+                // 每秒生成多少条数据
+                .option("rowsPerSecond", 10)
+                // 每条数据生成的间隔时间
+                .option("rampUpTime", "0s")
+                // 分区数
+                .option("numPartitions", "2")
+                .load()
+            df.printSchema()
+
+            df.writeStream()
+                .format("console")
+                // complete输出模式只能用于聚合
+                // .outputMode(OutputMode.Complete())
+                .outputMode(OutputMode.Append())
+                // 显示完整列名
+                .option("truncate", false)
+                .start().awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+##### File
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.types.StructType
+
+object SourceFileDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val csvSchema = StructType().add("name", DataTypes.StringType, true)
+                .add("age", DataTypes.IntegerType, false)
+                .add("hobby", DataTypes.StringType, false)
+
+            val df = spark.readStream()
+                .option("sep", ";")
+                // csv没有标题头
+                .option("header", false)
+                // .csv("data/input/persons")
+                .format("csv")
+                .schema(csvSchema)
+                .load("data/input/persons")
+
+            df.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Append())
+                .start().awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### WordCount
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.functions as F
+
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-08-07
+ */
+object WordCountDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.readStream()
+                .format("socket")
+                .option("host", "192.168.150.121")
+                .option("port", 8000)
+                .load()
+
+            val ds = df.`as`(Encoders.STRING())
+
+            val wordDs = ds.flatMap(FlatMapFunction { it.split(Regex("\\s+")).iterator() }, Encoders.STRING())
+
+            val result1 = wordDs.groupBy("value")
+                .count()
+                .orderBy(F.col("count").desc())
+
+            result1.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Complete())
+                .start()
+				// 阻塞运行，如果有多个输出，只能在最后输出的地方阻塞，不然后面的代码就无法运行了。
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### Sink
+
+输出到外部数据源
+
+##### Output Modes
+
+三种输出模式：
+
+- *Complete Mode* - 更新整个结果到外部数据源，如何写入外部数据源覆盖、追加可以指定，该模式下通常是覆盖。
+- *Append Mode* - 将数据追加到外部数据源，只能用于没有更新操作、没有聚合计算的流。
+- *Update Mode* - 只将更新的数据追加到外部数据源，支持聚合计算，如果没有聚合计算与Append Mode效果一致。
+
+##### Sink不同外部数据源
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.api.java.function.VoidFunction2
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.streaming.OutputMode
+
+/**
+ * @author liuchongwei
+ * @email lcwliuchongwei@qq.com
+ * @date 2022-08-07
+ */
+object SinkDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.readStream()
+                .format("socket")
+                .option("host", "192.168.150.121")
+                .option("port", 8000)
+                .load()
+            val ds = df.`as`(Encoders.STRING())
+
+            // 输出控制台
+//            val result1 = ds.writeStream()
+//                .format("console")
+//                .outputMode(OutputMode.Append())
+//                .start()
+//            result1.awaitTermination()
+
+//            val result2 = ds.writeStream()
+//                .format("memory")
+//                // memory模式将流数据存储到内存中，需要指定表名
+//                .queryName("memory_data")
+//                .outputMode(OutputMode.Append())
+//                .start()
+            // 死循环读取内存的流入的数据
+//            while (true) {
+//                spark.sql(
+//                    """select * from memory_data""".trimIndent()
+//                ).show()
+//                Thread.sleep(2000L)
+//            }
+
+            ds.flatMap(FlatMapFunction { it.split(Regex("\\s+")).iterator() }, Encoders.STRING())
+                .groupBy("value")
+                .count()
+                .writeStream()
+                // 类似于foreachPartitions
+                .foreachBatch(VoidFunction2 { ds, batchId ->
+                    println("---------------------------")
+                    println("batchId:$batchId")
+                    println("---------------------------")
+                    ds.show()
+                    // 自定义输出到mysql、控制台、kafka等（kafka有专用的库用来输出，无需手动编写）
+                    ds.repartition(1)
+                        .write()
+                        .mode(SaveMode.Overwrite)
+                        .format("jdbc")
+                        .option(
+                            "url",
+                            "jdbc:mysql://localhost:3336/test?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai"
+                        )
+                        .option("user", "root")
+                        .option("password", "tiger")
+                        .option("dbtable", "test.t_spark_stream_values")
+                        .save()
+                })
+                // 将所有数据写入数据库，上面写入采用的是覆盖，不会出现问题
+                .outputMode(OutputMode.Complete())
+                .start()
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+##### 触发间隔
+
+| Trigger Type                                                 | Description                                                  |
+| :----------------------------------------------------------- | :----------------------------------------------------------- |
+| 默认                                                         | 如果未明确指定触发器设置，则默认情况下，查询将在微批模式下执行，在该模式下，一旦前一个微批完成处理，就会生成新的微批，即尽快微批处理。 |
+| **Fixed interval micro-batches**                             | 查询将在微批次模式下执行，微批次将在用户指定的时间间隔内启动。如果前一个微批次在间隔内完成，则发动机将等待间隔结束后再启动下一个微批。如果前一个微批次的完成时间长于间隔（即，如果错过间隔边界），则下一个微批将在前一个完成后立即开始（即，它不会等待下一个间隔边界）。如果没有新数据可用，则不会启动微批处理。 |
+| **One-time micro-batch**                                     | 查询将只执行**一个**微批以处理所有可用数据，然后自行停止。这在以下场景中非常有用：您希望定期启动集群，处理自上一个周期以来可用的所有内容，然后关闭集群。在某些情况下，这可能会大大节省成本。 |
+| **Available-now micro-batch**                                | 与一次性微批触发查询类似，查询将处理所有可用数据，然后自行停止。不同之处在于，它将根据源数据（如文件源的“MaxFilePerTrigger”）处理多个微批次处理数据（不一定处理），可以获得更好的查询可伸缩性。 |
+| **Continuous with fixed checkpoint interval** *(experimental)* | 真正的流式处理，而非微批处理，可以获得毫秒级的延迟。该选项还是实验性的，想要做实时还得是Flink。 |
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.streaming.Trigger
+
+object SinkTriggerAndCheckpoint {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val df = spark.readStream()
+                .format("socket")
+                .option("host", "192.168.150.121")
+                .option("port", 8000)
+                .load()
+            val ds = df.`as`(Encoders.STRING())
+
+            ds.flatMap(FlatMapFunction { it.split(Regex("\\s+")).iterator() }, Encoders.STRING())
+                // continuous模式流（即实时流）中，必须在groupBy前coalesce(1)
+                // 即不能分布式只能单分区内执行（一台机器上执行，可以多线程执行）
+				// Spark3.3.0 版本实时流，也不支持聚合操作，真LJ，还得是Flink
+//                .coalesce(1)
+//                .groupBy("value")
+//                .count()
+                // 注意：
+                // Sorting is not supported on streaming DataFrames/Datasets,
+                // unless it is on aggregated DataFrame/Dataset in Complete output mode;
+                // .orderBy(F.col("count").desc())
+                .writeStream()
+                .format("console")
+                .outputMode(OutputMode.Append())
+                // `Trigger.ProcessingTime("2 seconds")`，延迟2秒后处理
+
+                // 默认不指定trigger，就是`run micro-batch as soon as it can`
+                // 尽快微批处理（可见任然使用micro batch模拟streaming，远远达不到flink的实时性）
+
+                // 相当于 `Trigger.ProcessingTime("0 seconds")`
+                // `Trigger.Once()` write只触发一次
+
+                // 连续处理，即数据来了就处理（真正的实时处理，而非micro batch），目前仍处于试验阶段
+                // 连续处理需要指定checkpoint间隔（下面指定的是checkpoint时间间隔）
+                .trigger(Trigger.Continuous("1 seconds"))
+                .option("checkpointLocation", "./streaming_continuous.ckpt")
+                .start()
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### StructuredStreaming整合Kafka
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.FlatMapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.streaming.Trigger
+import java.util.concurrent.TimeUnit
+
+object KafkaEtlDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val kafkaDf = spark.readStream()
+                .format("kafka")
+                .option("kafka.bootstrap.servers", "192.168.150.121:9092")
+                .option("subscribe", "hello-world")
+                .load()
+            // 默认从Kafka读取的key是binary格式，需要使用转换类型后才能作为字符串使用
+            val ds = kafkaDf.selectExpr("cast(value as string)").`as`(Encoders.STRING())
+
+            val wordCountDs = ds
+                .flatMap(FlatMapFunction { it.split(Regex("\\s+")).iterator() }, Encoders.STRING())
+//                .groupBy("value")
+//                .count()
+//                .orderBy(F.col("count").desc())
+
+			// 想要输出到kafka，配置同输入端。
+            wordCountDs.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Append())
+				// 用连续流（实时流），为了快速看到消息，但是连续流不支持聚合计算。
+                .trigger(Trigger.Continuous(1, TimeUnit.SECONDS))
+                .option("checkpointLocation", "./kafkaEtl.ckpt")
+                .start()
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### 案例--物联网设备数据
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.functions as F
+
+object KafkaIotDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val kafkaDf = spark.readStream()
+                .format("kafka")
+                .option("kafka.bootstrap.servers", "192.168.150.121:9092")
+                .option("subscribe", "hello-world")
+                .load()
+            val ds = kafkaDf.selectExpr("cast(value as string)").`as`(Encoders.STRING())
+            // {"device": "device_1", "deviceType": "kafka", "signal": 77.0, "time": 1613312321312}
+            val schemeDf = ds.select(
+                F.get_json_object(ds.col("value"), "$.device").`as`("device"),
+                F.get_json_object(ds.col("value"), "$.deviceType").`as`("deviceType"),
+                F.get_json_object(ds.col("value"), "$.signal").`as`("signal"),
+                F.get_json_object(ds.col("value"), "$.time").`as`("time"),
+            )
+            // 统计信号强度>30的各种设备类型对应的数量和平均信号强度
+            val result1 = schemeDf.filter("signal > 30")
+                .groupBy("deviceType")
+                .agg(
+                    F.count("deviceType").`as`("cnt"),
+                    F.avg("signal").`as`("avg_signal")
+                ).select("deviceType", "cnt", "avg_signal")
+
+            result1.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Complete())
+                .start()
+                .awaitTermination()
+
+//            schemeDf.createTempView("df")
+//            val result2 = spark.sql("""
+//                select
+//                    deviceType,
+//                    count(deviceType) as cnt,
+//                    avg(signal) as avg_signal
+//                from df
+//                where signal > 30
+//                group by deviceType
+//            """.trimIndent())
+//
+//            result1.writeStream()
+//                .format("console")
+//                .outputMode(OutputMode.Complete())
+//                .start()
+//                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### 事件时间
+
+![1610160189505](Spark.assets/1610160189505.png)
+
+基于事件时间进行窗口计算，会出现一下问题：
+
+数据可能迟到，1:00产生的数据可能由于网络延迟，在1:05产生的数据后到来，我们是否应该计算它，还是忽略。
+
+为了解决数据迟到的问题，引入了水位线机制，数据到来时会使水位线逐渐升高。如果到来的数据事件时间比水位线小，那么数据就是迟到了，Spark提供API，支持处理迟到指定时间内的数据。
+
+基于事件时间进行窗口计算 + Watermaker水位线 解决数据延迟到达问题
+
+![1610160635768](Spark.assets/1610160635768.png)
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.MapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import scala.Tuple2
+import java.sql.Timestamp
+import org.apache.spark.sql.functions as F
+
+object WindowWaterMarkDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val fileDs = spark.readStream()
+                .textFile("./data/input/window_watermark_demo")
+
+            val dataWithTime = fileDs.map(MapFunction {
+                val fields = it.split(" ")
+                // Spark要求水位线不许是Timestamp类型
+                Tuple2.apply(Timestamp(fields[0].toLong()), fields[1])
+            }, Encoders.tuple(Encoders.TIMESTAMP(), Encoders.STRING()))
+                .toDF("timestamp", "word")
+
+            dataWithTime.printSchema()
+
+            // 指定水位线与允许迟到的时间
+            val dataWithWaterMark = dataWithTime.withWatermark("timestamp", "1 seconds")
+                .groupBy(
+                    F.window(
+                        dataWithTime.col("timestamp"),
+                        //   窗口大小      滑动距离
+                        // "4 seconds", "2 seconds"
+                        // 2秒的滚动窗口
+                        "2 seconds"
+                    ),
+                    F.col("word")
+                ).count()
+
+            dataWithWaterMark.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Complete())
+                .option("truncate", false)
+                .start()
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+#### 流数据去重
+
+Spark中的批数据去重很简单
+
+```
+df.dropDuplicates("列名1","列名2")
+```
+
+流式数据去重需要保存历史数据的状态才可以做的去重，在SparkStreaming我们需要自己维护状态，而StructuredStreaming的状态管理是自动的，所以StructuredStreaming的流式数据去重和批处理一样。
+
+```
+df.dropDuplicates("列名1","列名2")
+```
+
+##### SparkStreaming去重
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.Optional
+import org.apache.spark.streaming.Duration
+import org.apache.spark.streaming.api.java.JavaStreamingContext
+import scala.Tuple2
+
+object SparkStreamingDropDuplicateDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val ssc = JavaStreamingContext(sc, Duration(2000))
+            ssc.checkpoint("./temp.ckpt")
+
+            val ds = ssc.socketTextStream("192.168.150.121", 8000)
+
+            ds.mapToPair { Tuple2.apply(it, it) }
+                .updateStateByKey<MutableSet<String>> { values, state ->
+                    // 初始化HashSet状态
+                    val st = state.or(hashSetOf())
+                    // 利用HashSet去重
+                    st += values
+                    Optional.of(st)
+                }.print()
+
+            ssc.start()
+            ssc.awaitTermination()
+            spark.stop()
+        }
+    }
+}
+```
+
+##### StructuredStreaming去重
+
+```kotlin
+import my.lcw.learn.spark.javaer.util.SparkUtils
+import org.apache.spark.api.java.function.MapFunction
+import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.streaming.OutputMode
+import org.apache.spark.sql.streaming.Trigger
+import scala.Tuple2
+import java.sql.Timestamp
+
+object DropDuplicateDemo {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SparkUtils.sparkRunCtx { spark, sc ->
+            val fileDs = spark.readStream()
+                .textFile("./data/input/structured_streaming_drop_duplicate")
+
+            val wordDs = fileDs.map(MapFunction {
+                val fields = it.split(" ")
+                Tuple2.apply(Timestamp(fields[0].toLong()), fields[1])
+            }, Encoders.tuple(Encoders.TIMESTAMP(), Encoders.STRING()))
+                .toDF("time", "word")
+                // 测试流式数据去重，正常情况下流式数据需要保存状态，StructuredStreaming自动维护了状态，无需用户手动维护
+                .dropDuplicates("time", "word")
+                .withWatermark("time", "1 seconds")
+
+            wordDs.writeStream()
+                .format("console")
+                .outputMode(OutputMode.Append())
+                .option("truncate", false)
+                .trigger(Trigger.ProcessingTime("0 seconds"))
+//                .trigger(Trigger.Continuous("1 seconds"))
+//                .option("checkpointLocation", "./temp.ckpt")
+                .start()
+                .awaitTermination()
+
+            spark.stop()
+        }
+    }
+}
+```
+
+
+
 ## SparkOnHive
 
 > Spark通过Hive Metastore做hdfs上的hive表数据
 >
-> 还有一个HiveOnSpark, 将hive sql转换成spark的rdd运行, 将spark作为执行引擎速度上远快于MR程序.
+> 还有一个HiveOnSpark, 将hive sql转换成spark的rdd运行, 将spark作为执行引擎速度上远快于MR程序。
+>
+> 与SparkOnHive的主要区别是：SparkOnHive只是依赖于HiveMetaserver，sql的语法解析、优化、DAG构建都是由Spark完成的。（但是SparkOnHive并不完全支持Hive语法，95%以上语法支持）。
 
 spark配置
 
@@ -1904,7 +4024,10 @@ if __name__ == '__main__':
 
 > Spark ThriftServer提供的Sql服务, 兼容hiveserver2协议, 直接使用hive客户端连接即可.
 
-启动spark-thriftserver
+1. 将`hive-site.xml`拷贝到`$SPARK_HOE/conf`下
+2. 如果想要ThriftServer中的Spark任务被Yarn调度，需要配置`spark-env.sh`并指定`--master yarn`
+
+3. 启动spark-thriftserver
 
 ````bash
 $SPARK_HOME/sbin/start-thriftserver.sh \
@@ -1912,6 +4035,36 @@ $SPARK_HOME/sbin/start-thriftserver.sh \
 --hiveconf hive.server2.thrift.bind.host=cdh2 \
 --master local[*]
 ````
+
+4. spark-thriftserver详细参数
+
+```bash
+$SPARK_HOME/sbin/start-thriftserver.sh \
+--master yarn \
+--driver-memory 2G \
+--executor-memory 2G \
+--num-executors 2 \
+--executor-cores 2 \
+--hiveconf hive.server2.thrift.bind.host=`hostname -i` \
+--hiveconf hive.server2.thrift.port=10001
+```
+
+动态资源分配
+
+```bash
+export SPARK_NO_DAEMONIZE=true
+export SPARK_LOG_DIR=/data0/Logs/$USER/spark-2.1.0 
+export SPARK_PID_DIR=$SPARK_LOG_DIR/PID
+
+$SPARK_HOME/sbin/start-thriftserver.sh --executor-memory 20g --executor-cores 5 --driver-memory 10g \
+--driver-cores 5 --conf spark.dynamicAllocation.enabled=true --conf spark.shuffle.service.enabled=true \
+--conf spark.dynamicAllocation.initialExecutors=20 --conf spark.dynamicAllocation.minExecutors=20 \
+--conf spark.dynamicAllocation.maxExecutors=400 --conf spark.dynamicAllocation.executorIdleTimeout=300s \
+--conf spark.dynamicAllocation.schedulerBacklogTimeout=10s --conf spark.speculation=true \
+--conf spark.speculation.interval=2s --conf spark.speculation.multiplier=10 \
+--conf spark.speculation.quantile=0.9 --hiveconf hive.server2.global.init.file.location=$SPARK_CONF_DIR \
+--hiveconf hive.server2.thrift.bind.host=`hostname -i` --hiveconf hive.server2.thrift.port=10001
+```
 
 ## Spark3.0新特性
 
