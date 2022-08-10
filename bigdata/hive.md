@@ -150,6 +150,49 @@ HiveCLI --> MetaStore --> Mysql
 
 直接使用`HIVE_HOME/bin/hive`运行即可
 
+```bash
+-e <quoted-query-string>        执行命令行-e参数后指定的sql语句 运行完退出。
+-f <filename>                  执行命令行-f参数后指定的sql文件 运行完退出。
+-H,--help                      打印帮助信息
+    --hiveconf <property=value>   设置参数
+-S,--silent                     静默模式
+-v,--verbose                   详细模式，将执行sql回显到console
+   --service service_name        启动hive的相关服务
+```
+
+当使用**-e或-f选项**运行$ HIVE_HOME / bin / hive时，它将以批处理模式执行SQL命令。所谓的批处理可以理解为一次性执行，执行完毕退出。
+
+```bash
+#-e
+$HIVE_HOME/bin/hive -e 'show databases'
+
+#-f
+cd ~
+#编辑一个sql文件 里面写上合法正确的sql语句
+vim hive.sql
+show databases;
+#执行 从客户端所在机器的本地磁盘加载文件
+$HIVE_HOME/bin/hive -f /root/hive.sql
+#也可以从其他文件系统加载sql文件执行
+$HIVE_HOME/bin/hive -f hdfs://<namenode>:<port>/hive-script.sql
+$HIVE_HOME/bin/hive -f s3://mys3bucket/s3-script.sql
+#使用静默模式将数据从查询中转储到文件中
+$HIVE_HOME/bin/hive -S -e 'select * from itheima.student' > a.txt
+```
+
+启动该服务、修改配置
+
+远程模式部署方式下，hive metastore服务需要单独配置手动启动，此时就可以使用Hive CLI来进行相关服务的启动，hiveserver2服务类似。
+
+```bash
+#--service
+$HIVE_HOME/bin/hive --service metastore
+$HIVE_HOME/bin/hive --service hiveserver2
+
+#--hiveconf
+$HIVE_HOME/bin/hive --hiveconf hive.root.logger=DEBUG,console
+```
+
 ### Beeline
 
 > 第二代hvie客户端
@@ -741,10 +784,39 @@ where id = 6;
 ## 导出数据
 
 ```sql
+--标准语法:
+INSERT OVERWRITE [LOCAL] DIRECTORY directory1
+    [ROW FORMAT row_format] [STORED AS file_format] (Note: Only available starting with Hive 0.11.0)
+SELECT ... FROM ...
+
+--Hive extension (multiple inserts):
+FROM from_statement
+INSERT OVERWRITE [LOCAL] DIRECTORY directory1 select_statement1
+[INSERT OVERWRITE [LOCAL] DIRECTORY directory2 select_statement2] ...
+
+--row_format
+: DELIMITED [FIELDS TERMINATED BY char [ESCAPED BY char]] [COLLECTION ITEMS TERMINATED BY char]
+[MAP KEYS TERMINATED BY char] [LINES TERMINATED BY char]
+```
+
+```sql
 -- 注意overwrite语法表示直接情况目标文件夹并写入数据, 使用时一定要注意(默认是hdfs上，使用local存储到hiveserver2上)
 insert overwrite directory "/tmp/hive_export/1"
 select id, name, province_ext
 From user_with_province_part;
+--当前库下已有一张表student
+select * from student;
+
+--1、导出查询结果到HDFS指定目录下
+insert overwrite directory '/tmp/hive_export/e1' select * from student;
+
+--2、导出时指定分隔符和文件存储格式
+insert overwrite directory '/tmp/hive_export/e2' row format delimited fields terminated by ','
+stored as orc
+select * from student;
+
+--3、导出数据到本地文件系统指定目录下
+insert overwrite local directory '/root/hive_export/e1' select * from student;
 ```
 
 ## 视图
@@ -1048,7 +1120,7 @@ from t_usa_covid19_bucket
 -- y：必须是总桶数的因数或倍数（自定义）
 -- z：共需抽取出的桶数（z=n/y）
 -- on column：表示要抽样的列，使用rand()函数实现随机抽样。如果不适用on rand()，在x,y固定的情况下，抽样数据固定。
--- 事实上tablesample就是根据用户指定的y，再次将数据分散到y个桶中，因此x,y固定（on默认是按照bucket key）数据也会固定在同一个桶内，取到的数据自然也是一样的。使用on rand()后，就是随机散列了。
+-- 事实上tablesample就是根据用户指定的y，再次将数据分散到y个桶中，因此x,y固定，on后面的字段值不变（on默认是按照bucket key）数据也会固定在同一个桶内，取到的数据自然也是一样的。使用on rand()后，就是随机散列了。
 select *
 from t_usa_covid19_bucket
          tablesample (bucket 1 out of 3 on state);
@@ -1199,9 +1271,759 @@ with rollup
 order by GROUPING__ID;
 ```
 
+### 自定义函数
+
+导入依赖
+
+```xml
+<!--hadoop版本信息-->
+<dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-client</artifactId>
+    <version>3.3.1</version>
+</dependency>
+
+<!--hive版本信息-->
+<dependency>
+    <groupId>org.apache.hive</groupId>
+    <artifactId>hive-exec</artifactId>
+    <version>3.1.2</version>
+</dependency>
+</dependencies>
+```
+
+
+
+#### UDF
+
+传入一行，返回一行
+
+这里的一个参数并不是严格意义上的一个参数，事实上udf函数可以传入多个参数，返回一个值。但是注意是传入多个参数，而不是多行数据。
+
+1. 继承`org.apache.hadoop.hive.ql.exec.UDF`
+2. 重写`evaluate`()，这个方法不是由接口定义的,因为它可接受的参数的个数,数据类型都是不确定的。Hive会检查UDF,看能否找到和函数调用相匹配的evaluate()方法
+
+```java
+import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.hive.ql.exec.UDF;
+
+/**
+ * 转换小写或者大写
+ */
+public class TolowerOrUpperCase extends UDF {
+    public String evaluate(String val, int i) {
+        if (StringUtils.isBlank(val)) {
+            return "";
+        }
+        else if (i == 0) {
+            return val.toUpperCase();
+        }
+        else {
+            return val.toLowerCase();
+        }
+    }
+    //调试自定义函数
+    public static void main(String[] args){
+        System.out.println(new TolowerOrUpperCase().evaluate("ericray",0));
+    }
+}
+```
+
+进入hive使用`add jar`添加jar包，这种方式只能临时使用。
+
+```bash
+# 将jar包添加到hive classpath中
+# 进入hive客户端，执行下面命令
+0: jdbc:hive2://master:10000> add jar /opt/export/udf_jar/hive_udf-1.0-SNAPSHOT.jar;
+
+# 创建一个临时函数,注意函数名：包名.class类名
+0: jdbc:hive2://master:10000> create temporary function my_case as 'hive_udf.TolowerOrUpperCase';
+OK
+No rows affected (0.033 seconds)
+
+# 测试功能：
+0: jdbc:hive2://master:10000> select my_case('abac',0);
+OK
++-------+
+|  _c0  |
++-------+
+| ABAC  |
++-------+
+
+# 在表中应用
+0: jdbc:hive2://master:10000> select my_case(name,0) as upper_name from employee;
+OK
++-------------+
+| upper_name  |
++-------------+
+| STFF        |
+| JOE         |
+| RUBY        |
+| BETTY       |
++-------------+
+4 rows selected (3.771 seconds)
+```
+
+启动参数添加jar包。
+
+也是在本session有效，临时函数。
+
+```bash
+# 将编写的udf的jar包上传到服务器上
+[hadoop@master udf_jar]$ pwd
+/opt/export/udf_jar
+[hadoop@master udf_jar]$ ll
+total 4
+-rw-rw-r-- 1 hadoop hadoop 2221 Aug  9 14:02 hive_udf-1.0-SNAPSHOT.jar
+
+# 创建配置文件
+[hadoop@master bin]$ pwd
+/opt/hive/bin
+[hadoop@master bin]$ vim hive-init
+
+# 添加以下内容
+# temporary 关键字定义临时函数，不声明则是永久函数
+add jar /opt/export/udf_jar/hive_udf-1.0-SNAPSHOT.jar;
+create temporary function my_case as 'hive_udf.TolowerOrUpperCase';
+
+# 3、启动hive的时候带上初始化文件：
+```
+
+配置文件加载
+
+通过配置文件方式这种只要用hive命令行启动都会加载函数。
+
+```bash
+# 将编写的udf的jar包上传到服务器上
+[hadoop@master udf_jar]$ pwd
+/opt/export/udf_jar
+[hadoop@master udf_jar]$ ll
+total 4
+-rw-rw-r-- 1 hadoop hadoop 2221 Aug  9 14:02 hive_udf-1.0-SNAPSHOT.jar
+
+#在hive的安装目录的bin目录下创建一个配置文件，文件名：.hiverc
+vi ./bin/.hiverc
+add jar /hivedata/udf.jar;
+create temporary function my_case as 'hive_udf.TolowerOrUpperCase';
+3、启动hive
+[hadoop@master bin]$ hive
+hive> select my_case('abac',0);
+OK
+ABAC
+Time taken: 7.489 seconds, Fetched: 1 row(s)
+```
+
+#### UDAF
+
+传入多行，返回一行
+
+```java
+package com.udf.hive;
+
+import org.apache.hadoop.hive.ql.exec.UDAF;
+import org.apache.hadoop.hive.ql.exec.UDAFEvaluator;
+import org.apache.hadoop.io.IntWritable;
+
+// UDAF类已经过时弃用了，现在是实现GenericUDAFResolver2接口
+// 求最大值
+@Deprecated
+public class MaxValueUDAF extends UDAF {
+    public static class MaximumIntUDAFEvaluator implements UDAFEvaluator {
+        private IntWritable result;
+        public void init() {
+            result = null;
+        }
+        public boolean iterate(IntWritable value) {
+            if (value == null) {
+                return true;
+            }
+            if (result == null) {
+                result = new IntWritable( value.get() );
+            } else {
+                result.set( Math.max( result.get(), value.get() ) );
+            }
+            return true;
+        }
+        public IntWritable terminatePartial() {
+            return result;
+        }
+        public boolean merge(IntWritable other) {
+            return iterate( other );
+        }
+        public IntWritable terminate() {
+            return result;
+        }
+    }
+}
+```
+
+#### UDTF
+
+传入一行，返回多行
+
+1. 继承`org.apache.hadoop.hive.ql.udf.generic.GenericUDF`，
+
+2. 重写`initlizer（）、getdisplay（）、evaluate()`
+
+```java
+package com.udf.hive; //这里我新建了一个包
+
+import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
+import org.apache.hadoop.hive.ql.exec.UDFArgumentLengthException;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDTF;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
+import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
+
+import java.util.ArrayList;
+
+// 把"k1:v1;k2:v2;k3:v3"类似的的字符串解析成每一行多行,每一行按照key:value格式输出
+public class ParseMapUDTF extends GenericUDTF {
+    @Override
+    public void close() throws HiveException {
+    }
+
+    @Override
+   public StructObjectInspector initialize(ObjectInspector[] args)
+            throws UDFArgumentException {
+        if (args.length != 1) {
+            throw new UDFArgumentLengthException(" 只能传入一个参数");
+        }
+
+        ArrayList<String> fieldNameList = new ArrayList<String>();
+        ArrayList<ObjectInspector> fieldOIs = new ArrayList<ObjectInspector>();
+        fieldNameList.add("map");
+        fieldOIs.add(PrimitiveObjectInspectorFactory.javaStringObjectInspector);
+        fieldNameList.add("key");
+        fieldOIs.add(PrimitiveObjectInspectorFactory.javaStringObjectInspector);
+
+        return ObjectInspectorFactory.getStandardStructObjectInspector(fieldNameList,fieldOIs);
+    }
+
+    @Override
+    public void process(Object[] args) throws HiveException {
+        String input = args[0].toString();
+        String[] paramString = input.split(";");
+        for(int i=0; i<paramString.length; i++) {
+            try {
+                String[] result = paramString[i].split(":");
+                forward(result);
+            } catch (Exception e) {
+                continue;
+            }
+        }
+    }
+}
+```
+
+#### 创建永久生效的函数
+
+1）本地打包上传到服务器
+
+```bash
+scp /Users/zll/Desktop/SubstrTimeUDF.jar root@hadoop01:/data/hive/lib
+```
+
+2）在hdfs上创建目录
+
+```bash
+hadoop fs -mkdir /user/lib/
+```
+
+3）将jar包从服务器上传到hdfs的指定目录，例如/user/lib/目录
+
+```bash
+hadoop fs -put /data/hive/lib/dateUtils.jar /user/lib/
+```
+
+4）设置文件的可读权限
+
+```bash
+hadoop fs -chmod a+x /user/lib/dateUtils.jar
+```
+
+5）创建永久自定义函数
+
+```bash
+create function default.dateUtils as 'DateUtils' using jar 'hdfs://hadoop01:9000/user/lib/dateUtils.jar';
+```
+
+### 函数补充
+
+#### 字符串函数
+
+```
+字符串长度函数：length
+字符串反转函数：reverse
+字符串连接函数：concat
+带分隔符字符串连接函数：concat_ws
+字符串截取函数：substr,substring
+字符串转大写函数：upper,ucase
+字符串转小写函数：lower,lcase
+去空格函数：trim
+左边去空格函数：ltrim
+右边去空格函数：rtrim
+正则表达式替换函数：regexp_replace
+正则表达式解析函数：regexp_extract
+URL解析函数：parse_url
+json解析函数：get_json_object
+空格字符串函数：spaces
+重复字符串函数：repeat
+首字符ascii函数：ascii
+左补足函数：lpad
+右补足函数：rpad
+分割字符串函数: split
+集合查找函数: find_in_set
+```
+
+```sql
+------------String Functions 字符串函数------------
+describe function extended find_in_set;
+
+--字符串长度函数：length(str | binary)
+select length("angelababy");
+
+--字符串反转函数：reverse
+select reverse("angelababy");
+
+--字符串连接函数：concat(str1, str2, ... strN)
+select concat("angela","baby");
+
+--带分隔符字符串连接函数：concat_ws(separator, [string | array(string)]+)
+select concat_ws('.', 'www', array('itcast', 'cn'));
+
+--字符串截取函数：substr(str, pos[, len]) 或者  substring(str, pos[, len])
+select substr("angelababy",-2); --pos是从1开始的索引，如果为负数则倒着数
+select substr("angelababy",2,2);
+
+--字符串转大写函数：upper,ucase
+select upper("angelababy");
+select ucase("angelababy");
+
+--字符串转小写函数：lower,lcase
+select lower("ANGELABABY");
+select lcase("ANGELABABY");
+
+--去空格函数：trim 去除左右两边的空格
+select trim(" angelababy ");
+
+--左边去空格函数：ltrim
+select ltrim(" angelababy ");
+
+--右边去空格函数：rtrim
+select rtrim(" angelababy ");
+
+--正则表达式替换函数：regexp_replace(str, regexp, rep)
+select regexp_replace('100-200', '(\\d+)', 'num');
+
+--正则表达式解析函数：regexp_extract(str, regexp[, idx]) 提取正则匹配到的指定组内容
+select regexp_extract('100-200', '(\\d+)-(\\d+)', 2);
+
+--URL解析函数：parse_url 注意要想一次解析出多个 可以使用parse_url_tuple这个UDTF函数
+select parse_url('http://www.itcast.cn/path/p1.php?query=1', 'HOST');
+
+--json解析函数：get_json_object
+--空格字符串函数：space(n) 返回指定个数空格
+select space(4);
+
+--重复字符串函数：repeat(str, n) 重复str字符串n次
+select repeat("angela",2);
+
+--首字符ascii函数：ascii
+select ascii("angela");  --a对应ASCII 97
+
+--左补足函数：lpad
+select lpad('hi', 5, '??');  --???hi
+select lpad('hi', 1, '??');  --h
+
+--右补足函数：rpad
+select rpad('hi', 5, '??');
+
+--分割字符串函数: split(str, regex)
+select split('apache hive', '\\s+');
+
+--集合查找函数: find_in_set(str,str_array)
+select find_in_set('a','abc,b,ab,c,def');
+```
+
+#### 日期函数
+
+```
+获取当前日期: current_date
+获取当前时间戳: current_timestamp
+UNIX时间戳转日期函数: from_unixtime
+获取当前UNIX时间戳函数: unix_timestamp
+日期转UNIX时间戳函数: unix_timestamp
+指定格式日期转UNIX时间戳函数: unix_timestamp
+抽取日期函数: to_date
+日期转年函数: year
+日期转月函数: month
+日期转天函数: day
+日期转小时函数: hour
+日期转分钟函数: minute
+日期转秒函数: second
+日期转周函数: weekofyear
+日期比较函数: datediff
+日期增加函数: date_add
+日期减少函数: date_sub
+```
+
+```sql
+--获取当前日期: current_date
+select current_date();
+
+--获取当前时间戳: current_timestamp
+--同一查询中对current_timestamp的所有调用均返回相同的值。
+select current_timestamp();
+
+--获取当前UNIX时间戳函数: unix_timestamp
+select unix_timestamp();
+
+--UNIX时间戳转日期函数: from_unixtime
+select from_unixtime(1618238391);
+select from_unixtime(0, 'yyyy-MM-dd HH:mm:ss');
+
+--日期转UNIX时间戳函数: unix_timestamp
+select unix_timestamp("2011-12-07 13:01:03");
+
+--指定格式日期转UNIX时间戳函数: unix_timestamp
+select unix_timestamp('20111207 13:01:03','yyyyMMdd HH:mm:ss');
+
+--抽取日期函数: to_date
+select to_date('2009-07-30 04:17:52');
+
+--日期转年函数: year
+select year('2009-07-30 04:17:52');
+
+--日期转月函数: month
+select month('2009-07-30 04:17:52');
+
+--日期转天函数: day
+select day('2009-07-30 04:17:52');
+
+--日期转小时函数: hour
+select hour('2009-07-30 04:17:52');
+
+--日期转分钟函数: minute
+select minute('2009-07-30 04:17:52');
+
+--日期转秒函数: second
+select second('2009-07-30 04:17:52');
+
+--日期转周函数: weekofyear 返回指定日期所示年份第几周
+select weekofyear('2009-07-30 04:17:52');
+
+--日期比较函数: datediff  日期格式要求'yyyy-MM-dd HH:mm:ss' or 'yyyy-MM-dd'
+select datediff('2012-12-08','2012-05-09');
+
+--日期增加函数: date_add
+select date_add('2012-02-28',10);
+
+--日期减少函数: date_sub
+select date_sub('2012-01-1',10);
+```
+
+#### 数学函数
+
+```
+取整函数: round
+指定精度取整函数: round
+向下取整函数: floor
+向上取整函数: ceil
+取随机数函数: rand
+二进制函数: bin
+进制转换函数: conv
+绝对值函数: abs
+```
+
+```sql
+--取整函数: round  返回double类型的整数值部分 （遵循四舍五入）
+select round(3.1415926);
+
+--指定精度取整函数: round(double a, int d) 返回指定精度d的double类型
+select round(3.1415926,4);
+
+--向下取整函数: floor
+select floor(3.1415926);
+select floor(-3.1415926);
+
+--向上取整函数: ceil
+select ceil(3.1415926);
+select ceil(-3.1415926);
+
+--取随机数函数: rand 每次执行都不一样 返回一个0到1范围内的随机数
+select rand();
+
+--指定种子取随机数函数: rand(int seed) 得到一个稳定的随机数序列
+select rand(2);
+
+--二进制函数:  bin(BIGINT a)
+select bin(18);
+
+--进制转换函数: conv(BIGINT num, int from_base, int to_base)
+select conv(17,10,16);
+
+--绝对值函数: abs
+select abs(-3.9);
+```
+
+#### 集合函数
+
+```
+集合元素size函数: size(Map<K.V>) size(Array<T>)
+取map集合keys函数: map_keys(Map<K.V>)
+取map集合values函数: map_values(Map<K.V>)
+判断数组是否包含指定元素: array_contains(Array<T>, value)
+数组排序函数:sort_array(Array<T>)
+```
+
+```sql
+--集合元素size函数: size(Map<K.V>) size(Array<T>)
+select size(`array`(11,22,33));
+select size(`map`("id",10086,"name","zhangsan","age",18));
+
+--取map集合keys函数: map_keys(Map<K.V>)
+select map_keys(`map`("id",10086,"name","zhangsan","age",18));
+
+--取map集合values函数: map_values(Map<K.V>)
+select map_values(`map`("id",10086,"name","zhangsan","age",18));
+
+--判断数组是否包含指定元素: array_contains(Array<T>, value)
+select array_contains(`array`(11,22,33),11);
+select array_contains(`array`(11,22,33),66);
+
+--数组排序函数:sort_array(Array<T>)
+select sort_array(`array`(12,2,32));
+```
+
+#### 条件函数
+
+```
+if条件判断: if(boolean testCondition, T valueTrue, T valueFalseOrNull)
+空判断函数: isnull( a )
+非空判断函数: isnotnull ( a )
+空值转换函数: nvl(T value, T default_value)
+非空查找函数: COALESCE(T v1, T v2, ...)
+条件转换函数: CASE a WHEN b THEN c [WHEN d THEN e]* [ELSE f] END
+nullif( a, b ): 如果a = b，则返回NULL；否则返回NULL。否则返回一个
+assert_true: 如果'condition'不为真，则引发异常，否则返回null
+```
+
+```sql
+--使用之前课程创建好的student表数据
+select * from student limit 3;
+
+--if条件判断: if(boolean testCondition, T valueTrue, T valueFalseOrNull)
+select if(1=2,100,200);
+select if(sex ='男','M','W') from student limit 3;
+
+--空判断函数: isnull( a )
+select isnull("allen");
+select isnull(null);
+
+--非空判断函数: isnotnull ( a )
+select isnotnull("allen");
+select isnotnull(null);
+
+--空值转换函数: nvl(T value, T default_value)
+select nvl("allen","itcast");
+select nvl(null,"itcast");
+
+--非空查找函数: COALESCE(T v1, T v2, ...)
+--返回参数中的第一个非空值；如果所有值都为NULL，那么返回NULL
+select COALESCE(null,11,22,33);
+select COALESCE(null,null,null,33);
+select COALESCE(null,null,null);
+
+--条件转换函数: CASE a WHEN b THEN c [WHEN d THEN e]* [ELSE f] END
+select case 100 when 50 then 'tom' when 100 then 'mary' else 'tim' end;
+select case sex when '男' then 'man' else 'women' end from student limit 3;
+
+--nullif( a, b ):
+-- 果a = b，则返回NULL；否则返回NULL。否则返回一个
+select nullif(11,11);
+select nullif(11,12);
+
+--assert_true(condition)
+--如果'condition'不为真，则引发异常，否则返回null
+SELECT assert_true(11 >= 0);
+SELECT assert_true(-1 >= 0);
+```
+
+#### 类型转换函数
+
+```sql
+select cast(12.14 as bigint);
+select cast(12.14 as string);
+```
+
+#### 数据脱敏函数
+
+```
+mask
+mask_first_n(string str[, int n]
+mask_last_n(string str[, int n])
+mask_show_first_n(string str[, int n])
+mask_show_last_n(string str[, int n])
+mask_hash(string|char|varchar str)
+```
+
+```sql
+--mask
+--将查询回的数据，大写字母转换为X，小写字母转换为x，数字转换为n。
+select mask("abc123DEF");
+select mask("abc123DEF",'-','.','^'); --自定义替换的字母
+
+--mask_first_n(string str[, int n]
+--对前n个进行脱敏替换
+select mask_first_n("abc123DEF",4);
+
+--mask_last_n(string str[, int n])
+select mask_last_n("abc123DEF",4);
+
+--mask_show_first_n(string str[, int n])
+--除了前n个字符，其余进行掩码处理
+select mask_show_first_n("abc123DEF",4);
+
+--mask_show_last_n(string str[, int n])
+select mask_show_last_n("abc123DEF",4);
+
+--mask_hash(string|char|varchar str)
+--返回字符串的hash编码。
+select mask_hash("abc123DEF");
+```
+
+#### 杂项函数
+
+```
+hive调用java方法: java_method(class, method[, arg1[, arg2..]])
+反射函数: reflect(class, method[, arg1[, arg2..]])
+取哈希值函数:hash
+current_user()、logged_in_user()、current_database()、version()
+SHA-1加密: sha1(string/binary)
+SHA-2家族算法加密：sha2(string/binary, int)  (SHA-224, SHA-256, SHA-384, SHA-512)
+crc32加密:
+MD5加密: md5(string/binary)
+```
+
+```sql
+--hive调用java方法: java_method(class, method[, arg1[, arg2..]])
+select java_method("java.lang.Math","max",11,22);
+
+--反射函数: reflect(class, method[, arg1[, arg2..]])
+select reflect("java.lang.Math","max",11,22);
+
+--取哈希值函数:hash
+select hash("allen");
+
+--current_user()、logged_in_user()、current_database()、version()
+
+--SHA-1加密: sha1(string/binary)
+select sha1("allen");
+
+--SHA-2家族算法加密：sha2(string/binary, int)  (SHA-224, SHA-256, SHA-384, SHA-512)
+select sha2("allen",224);
+select sha2("allen",512);
+
+--crc32加密:
+select crc32("allen");
+
+--MD5加密: md5(string/binary)
+select md5("allen");
+```
+
+## Hive使用注意事项
+
+1. 如果每个表在联接子句中使用相同的列，则Hive将多个表上的联接转换为单个MR作业
+
+```sql
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key1)
+-- 由于联接中仅涉及b的key1列，因此被转换为1个MR作业来执行
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key2)
+-- 会转换为两个MR作业，因为在第一个连接条件中使用了b中的key1列，而在第二个连接条件中使用了b中的key2列。第一个map / reduce作业将a与b联接在一起，然后将结果与c联接到第二个map / reduce作业中。
+```
+
+2. join时的最后一个表会通过reducer流式传输，并在其中缓冲之前的其他表，因此，将大表放置在最后有助于减少reducer阶段缓存数据所需要的内存
+
+```sql
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key1)
+-- 由于联接中仅涉及b的key1列，因此被转换为1个MR作业来执行，并且表a和b的键的特定值的值被缓冲在reducer的内存中。然后，对于从c中检索的每一行，将使用缓冲的行来计算联接。
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key2)
+-- 计算涉及两个MR作业。其中的第一个将a与b连接起来，并缓冲a的值，同时在reducer中流式传输b的值。
+-- 在第二个MR作业中，将缓冲第一个连接的结果，同时将c的值通过reducer流式传输。
+```
+
+3. 在join的时候，可以通过语法STREAMTABLE提示指定要流式传输的表。如果省略STREAMTABLE提示，则Hive将流式传输最右边的表。
+
+```sql
+SELECT /*+ STREAMTABLE(a) */ a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key1)
+-- a,b,c三个表都在一个MR作业中联接，并且表b和c的键的特定值的值被缓冲在reducer的内存中。然后，对于从a中检索到的每一行，将使用缓冲的行来计算联接。如果省略STREAMTABLE提示，则Hive将流式传输最右边的表。
+```
+
+4. join在WHERE条件之前进行。
+5. 如果除一个要连接的表之外的所有表都很小，则可以将其作为仅map作业执行。
+
+```sql
+SELECT /*+ MAPJOIN(b) */ a.key, a.value FROM a JOIN b ON a.key = b.key
+-- 不需要reducer。对于A的每个Mapper，B都会被完全读取。限制是不能执行FULL / RIGHT OUTER JOIN b。
+```
+
+还有一些其他相关的使用注意事项，可以参考官方
+
+https://cwiki.apache.org/confluence/display/Hive/LanguageManual+Joins
+
 ## hive技巧与优化
 
-### url解析
+### 半连接
+
+hive提供了`left semi join`，相比`left join`、`join`等连接，`left semi join`连接只保留左边数据，并且只会传递连接键到Map阶段，因此性能更高。
+
+### 各种格式解析
+
+#### json文件读取
+
+```sql
+--切换数据库
+use db_function;
+
+--创建表
+create table tb_json_test2 (
+   device string,
+   deviceType string,
+   signal double,
+   `time` string
+ )
+ -- 指定使用json序列化器
+ROW FORMAT SERDE 'org.apache.hive.hcatalog.data.JsonSerDe'
+STORED AS TEXTFILE;
+```
+
+#### json解析
+
+```sql
+/*
+{"device": "d1", "deviceType": "kafka", "signal": 92.00, "time": 160652221}
+*/
+select
+       --获取设备名称
+       get_json_object(json,"$.device") as device,
+       --获取设备类型
+         get_json_object(json,"$.deviceType") as deviceType,
+       --获取设备信号强度
+       get_json_object(json,"$.signal") as signal,
+       --获取时间
+       get_json_object(json,"$.time") as stime
+from tb_json_test1;
+
+select
+       -- 返回设备名称及信号强度
+       json_tuple(json,"device","signal") as (device,signal)
+from tb_json_test1;
+```
+
+#### url解析
 
 ```sql
 select parse_url("http://www.baidu.com/q?wd=python", "HOST");
@@ -1763,13 +2585,34 @@ select *
 from big_files_textfile;
 ```
 
-### hive小文件存储优化
+### hive小文件优化
 
 > hdfs不适合处理小文件，每个文件都要存储元数据信息，hadoop中每个文件都会开启一个MR程序，过多小文件会导致资源浪费。
 >
 > hive提供了一个机制，可以自动合并小文件。
 
+对已经存在的小文件做出的解决方案：
+
+1. 使用Hadoop achieve把小文件进行归档
+
+2. 重建表，建表时减少reduce的数量
+
+3. 通过参数调节，设置map数量（下面的API属于hadoop低版本的API）
+
 ```sql
+-- 低版本hive配置
+-- 每个Map最大输入大小(这个值决定了合并后文件的数量)
+set mapred.max.split.size=112345600;  
+-- 一个节点上split的至少的大小(这个值决定了多个DataNode上的文件是否需要合并)
+set mapred.min.split.size.per.node=112345600;
+-- 一个交换机下split的至少的大小(这个值决定了多个交换机上的文件是否需要合并)  
+set mapred.min.split.size.per.rack=112345600;
+-- 执行Map前进行小文件合并
+set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
+```
+
+```sql
+-- 常用hive版本配置
 -- 如果hive的程序，只有maptask,将MapTaskj产生的所有小文件进行合并
 set hive.merge.mapfiles=true;
 -- 如果hive的程序，有Map和ReduceTask, 将ReduceTask产生的所有小文件进行合并
@@ -1786,6 +2629,44 @@ set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
 cdh中的配置
 
 ![image-20220723092341088](hive.assets/image-20220723092341088.png)
+
+### hive大文件优化
+
+当input的文件都很大，任务逻辑复杂，map执行非常慢的时候，可以考虑增加Map数，来使得每个map处理的数据量减少，从而提高任务的执行效率。
+
+如果表a只有一个文件，大小为120M，但包含几千万的记录，如果用1个map去完成这个任务，肯定是比较耗时的，这种情况下，我们要考虑将这一个文件合理的拆分成多个，这样就可以用多个map任务去完成。
+
+```sql
+set mapreduce.job.reduces =10;
+
+create table a_1 as
+select * from a
+distribute by rand(123); -- 通过distribute随机散列，将数据分撒到10个reduce task中
+```
+
+### ReduceTask数量调整
+
+（1）每个Reduce处理的数据量默认是256MB
+
+hive.exec.reducers.bytes.per.reducer=256123456
+
+（2）每个任务最大的reduce数，默认为1009
+
+hive.exec.reducers.max=1009
+
+（3）mapreduce.job.reduces
+
+该值默认为-1，由hive自己根据任务情况进行判断。
+
+
+
+ReduceTask并不是越多越好：
+
+1）过多的启动和初始化reduce也会消耗时间和资源；
+
+2）另外，有多少个reduce，就会有多少个输出文件，如果生成了很多个小文件，那么如果这些小文件作为下一个任务的输入，则也会出现小文件过多的问题；
+
+在设置reduce个数的时候也需要考虑这两个原则：处理大数据量利用合适的reduce数；使单个reduce任务处理数据量大小要合适；
 
 ### orc索引
 
@@ -1882,6 +2763,16 @@ set hive.auto.convert.join = false;
 >
 > **!!!注意本地模式需要在hive服务器环境中设置**
 
+hive会通过下面的参数判断是否启动本地模式
+
+```
+The total input size of the job is lower than:
+ hive.exec.mode.local.auto.inputbytes.max (128MB by default)
+The total number of map-tasks is less than:
+ hive.exec.mode.local.auto.tasks.max (4 by default)
+The total number of reduce tasks required is 1 or 0.
+```
+
 ```sql
 -- 开启本地模式，默认为false
 set hive.exec.mode.local.auto=true;
@@ -1921,10 +2812,13 @@ set hive.exec.parallel.thread.number=8;
 > 小表join大表时，我们可以利用分布式缓存存储小表数据，开启多个map-task处理大表数据最后直接输出到结果文件中。
 >
 > 开启自动mapjoin，hive可以自动进行mapjoin操作，缓存小表数据，map-task并行处理大表数据。
+>
+> 因此在实际使用中，只要根据业务把握住小表的阈值标准即可，hive会自动帮我们完成mapjoin，提高执行的效率。
 
 ```sql
 # hive2.0之前需要配置以下参数，hive2.0即以后版本，已经自动开启
 set hive.auto.convert.join=true;
+-- hive判断是否是小表的阈值，默认25M
 set hive.mapjoin.smalltable.filesize=25M;
 set hive.auto.convert.join.noconditionaltask.size=512000000;
 ```
@@ -2165,8 +3059,6 @@ hive提供了一些分区时的优化方案：
             */
             ```
     
-        - 
-    
     - 运行时防止数据倾斜
     
       - ```sql
@@ -2231,6 +3123,43 @@ set hive.exec.parallel=true;
 -- 最大允许并行执行的数量
 set hive.exec.parallel.thread.number=16;
 ```
+
+#### Hive严格模式
+
+Hive提供了一个严格模式，可以防止用户执行那些可能意向不到的不好的影响的查询。
+
+通过设置属性hive.mapred.mode值为默认是非严格模式nonstrict 。开启严格模式需要修改hive.mapred.mode值为strict，开启严格模式可以禁止3种类型的查询。
+
+1）对于分区表，除非where语句中含有分区字段过滤条件来限制范围，否则不允许执行。换句话说，就是用户不允许扫描所有分区。进行这个限制的原因是，通常分区表都拥有非常大的数据集，而且数据增加迅速。没有进行分区限制的查询可能会消耗令人不可接受的巨大资源来处理这个表。
+
+2）对于使用了order by语句的查询，要求必须使用limit语句。因为order by为了执行排序过程会将所有的结果数据分发到同一个Reducer中进行处理，强制要求用户增加这个LIMIT语句可以防止Reducer额外执行很长一段时间。
+
+3）限制笛卡尔积的查询。对关系型数据库非常了解的用户可能期望在执行JOIN查询的时候不使用ON语句而是使用where语句，这样关系数据库的执行优化器就可以高效地将WHERE语句转化成那个ON语句。不幸的是，Hive并不会执行这种优化，因此，如果表足够大，那么这个查询就会出现不可控的情况。
+
+#### 推测执行机制
+
+在分布式集群环境下，因为程序Bug（包括Hadoop本身的bug），负载不均衡或者资源分布不均等原因，会造成同一个作业的多个任务之间运行速度不一致，有些任务的运行速度可能明显慢于其他任务（比如一个作业的某个任务进度只有50%，而其他所有任务已经运行完毕），则这些任务会拖慢作业的整体执行进度。为了避免这种情况发生，Hadoop采用了推测执行（Speculative Execution）机制，它根据一定的法则推测出“拖后腿”的任务，并为这样的任务启动一个备份任务，让该任务与原始任务同时处理同一份数据，并最终选用最先成功运行完成任务的计算结果作为最终结果。
+
+hadoop中默认两个阶段都开启了推测执行机制。
+
+hive本身也提供了配置项来控制reduce-side的推测执行：
+
+```xml
+<property>
+    <name>hive.mapred.reduce.tasks.speculative.execution</name>
+    <value>true</value>
+</property>
+```
+
+关于调优推测执行机制，还很难给一个具体的建议。如果用户对于运行时的偏差非常敏感的话，那么可以将这些功能关闭掉。如果用户因为输入数据量很大而需要执行长时间的map或者Reduce task的话，那么启动推测执行造成的浪费是非常巨大。
+
+
+
+推测执行其实就是Google MapReduce论文中提出的备用任务，原文翻译：
+
+>让MapReduce任务执行的总时间变长的一个常见原因就是落伍者的出现，即在MapReduce计算中，一台机器花费了异常长的时间去完成最后几个Map或者Reduce任务，这样导致整个计算时间延长。导致落伍者出现的情况有很多。例如，某台机器上的硬盘出现了问题，在读取的时候经常要对数据进行纠错，这就导致硬盘的读取性能从30MB/s降低为1MB/s。如果集群中的调度系统在这台机器上又分派了其他任务，由于CPU、内存，本地硬盘和网络带宽等竞争因素的存在，这会导致正在执行的MapReduce代码的执行速度更加缓慢。我们最近所遇到的一个问题是在机器初始化代码中的一个bug，它导致了处理器的缓存被禁用。在这种机器上运行MapReduce计算的效率要比正常机器低百倍。
+
+> 我们有一个通用机制来降低落伍者导致的这种问题所带来的影响。当一个MapReduce计算接近完成时，master会调度一个备用（backup）任务来执行剩下的处于正在执行中（in-progress）的任务。无论是这个主任务还是这个备用任务完成了，我们都会将这个任务标记为完成。我们对这个机制进行了调优。通常情况下，它只会比正常操作多占几个百分点的计算资源。我们发现这样做能够显著减少运行大型MapReduce计算时所要花费的时间。例如，在章节5.3中的排序案例所述，如果这种备用机制被禁用，那我们将多花44%的时间来完成排序任务。
 
 #### 防止JVM内存溢出
 
