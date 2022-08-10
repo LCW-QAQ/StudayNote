@@ -4068,6 +4068,78 @@ $SPARK_HOME/sbin/start-thriftserver.sh --executor-memory 20g --executor-cores 5 
 
 ## Spark3.0新特性
 
+### 动态分区裁剪
+
+```sql
+select * 
+from a 
+join b on a.id = b.id and a.id < 2
+```
+
+对于上面的sql，spark2.x的处理，是将a表数据filter过滤`id<2`后，与b表全部数据等值连接。
+
+但是由于是等值连接，b表中的`id < 2`时，才可能有对应的数据，Spark3.x引入动态分区裁剪，可以在b表中先进行`id < 2`过滤，然后再将a、b表进行连接。（类似于谓词下推）
+
+开启动态分区裁剪：`spark.sql.optimizer.dynamicPartitionPruning.enabled=true`，该值默认就是**true**
+
+注意：并不是开启动态分区裁剪，就一定会进行优化，还要满足一下条件：
+
+1. 裁剪的表必须是分区表，并且分区字段在`join on`条件中
+2. join类型必须是inner，`left semi join`要求左边是分区表，`left outer`要求右表是分区表，`right outer`要求左表是分区表。
+3. `spark.sql.optimizer.dynamicPartitionPruning.useStats`和`spark.sql.optimizer.dynamicPartitionPruning.fallbackFilterRatio`两个参数综合评估出动态分区裁剪是否有益，满足了才会进行分区裁剪。
+
+代码
+
+```java
+import my.lcw.learn.spark.javaer.util.SparkUtils;
+import org.apache.spark.sql.AnalysisException;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+
+/**
+ * 测试spark3.x动态分区裁剪
+ */
+public class DynamicPartitionPruning {
+    public static void main(String[] args) {
+        SparkUtils.INSTANCE.sparkRunCtx((spark, sc) -> {
+            final Dataset<Row> tb1 = spark.range(10000)
+                    .select("id");
+            
+            final Dataset<Row> tb2 = spark.range(100)
+                    .select("id");
+
+            try {
+                tb1.createTempView("tb1");
+                tb2.createTempView("tb2");
+            } catch (AnalysisException e) {
+                e.printStackTrace();
+            }
+
+            final Dataset<Row> result1 = spark.sql("select * from tb1 a join tb2 b on a.id = b.id and b.id < 10");
+            result1.explain();
+            result1.show();
+
+            spark.stop();
+            return null;
+        }, conf -> {
+            // 开启动态分区裁剪
+            conf.set("spark.sql.optimizer.dynamicPartitionPruning.enabled", "true");
+            return null;
+        });
+    }
+}
+```
+
+### 静态分区裁剪
+
+```sql
+select * 
+from a 
+join b on a.id = b.id and a.id < 2
+```
+
+同动态分区裁剪，只不过在编译期间规划好，读取数据源时就过滤a表`id < 2`的数据。相比动态分区裁剪能通过运行时信息，在b表中也过滤出`id < 2`的数据。
+
 ### Adaptive Query Execution自适应查询(SparkSQL)
 
 > 类似于hive的CBO优化器, 通过运行时统计数据获得的元数据, 动态优化
@@ -4127,3 +4199,256 @@ bypass机制
 满足上面两个条件时, SortShuffle不会进行排序和分组(毕竟计算中根本没有分组操作, 当然就不需要排序与分组聚合了)
 
 ![image-20220628201533450](Spark.assets/image-20220628201533450.png)
+
+## Spark调优
+
+### 10大准侧
+
+#### **原则一：避免创建重复的RDD**
+
+```text
+一般而言，我们加载数据在hdfs或者本地或者任何地方
+比如下面的语句：
+val rdd1 = sc.textFile("hdfs://node1:9000/hello.txt")
+上面的语句我们从hdfs加载了一份hello.txt文件，这是正确的，毫无疑问，但是有时候当我们的代码达到一定
+数量级别之后，比如超过500行或者一千行，这个时候我们就可能忘记我们已经加载过这个数据源了，很大的程度
+上我们还会写下面的代码
+val rdd2  = sc.textFile("hdfs://node1:9000/hello.txt")
+所以你发现了没？我们对同一份数据进行了两次加载，读者读到这里可能会笑，怎么可能，我不会犯这样的错误，
+或者读者根本没有意识到这种有什么问题？
+很简单，在代码多的时候这种问题出现的概率很大，而且同一份数据加载两次就意味着我们第二次执行了一次耗时
+的操作，而且还没有啥用处。
+所以，我们再写代码的时候一定要注意这个问题，当数据量特别大的时候，而且是越大的时候，这个问题越严重，要
+仔细检查我们的代码，避免重复加载同一份数据。
+```
+
+#### **原则二：尽可能的复用同一个RDD**
+
+```text
+比如我们这里创建了一个rdd操作
+val rdd1 = xxxxx
+总之我们通过一种方式获取了一种rdd
+比如rdd1的数据格式现在为(key1,value1),这个时候我们想要做一种操作，我们指向用rdd1中的value1
+所以我们很有可能的操作是下面这种
+val rdd2 = rdd1.map(x=>(x._2))
+于是通过上面的操作我们又获得了一个新的rdd，于是接下来我们继续用rdd2操作
+rdd2.map(x=>x*2)
+到这里，读者你发现了问题了没？首先rdd2.map(x=>x*2)这个操作的执行步骤当在运行的时候还依旧是先去执行
+rdd1,然后创建rdd2,然后把里面的每个元素乘以2，有没有觉得多余呢？是的，很多余。
+那么我们正确的做法就是直接用rdd1来操作即可
+
+比如这个样子：
+val rdd1 = xxxx
+rdd1.map(x=>x._2 * 2))
+以上操作，我们并没有创建新的rdd，但是我们做到了相同的效果
+
+所以，我们再写rdd的时候尽可能的用同一个rdd，避免创建更多的rdd，以减少开销，减少算子的执行次数
+```
+
+#### **原则三：对多次使用的RDD进行持久化**
+
+```text
+比如下面的场景
+val rdd1 = sc.textFile("hdfs://node1:9000/hello.txt")
+rdd1.map(..)
+rdd1.reduce(..)
+我们观察一下，发现第二个rdd1.reduce实际上它的执行过程，依旧是从rdd1的加载开始执行，而rdd1.map也是从
+rdd1的加载数据开始执行，发现没？无论我们愿意还是不愿意，我们都将rdd1的过程执行了两次
+那么遇到这种情况，我们就可以将rdd1进行持久化，这样我们再次执行rdd1.reduce方法的时候实际上我们是从内存
+中直接加载的rdd1,并未重新执行rdd1的加载过程。
+正确代码如下：
+val rdd1 = sc.textFile("hdfs://node1:9000/hello.txt").cache()
+rdd1.map(..).foreach()
+rdd1.reduce(..)
+是的，接下来就要说明了一个问题了，cache()这个操作呢，需要action操作才能进行持久化。
+那么都有哪些action 操作呢？
+我来列举一下 
+collect()	
+first()	
+take(n)	
+takeSample(withReplacement, num, [seed])	
+takeOrdered(n, [ordering])	
+saveAsTextFile(path)	
+saveAsSequenceFile(path)
+saveAsObjectFile(path)
+countByKey()	
+foreach(func)	
+以上就是我们常用的action操作。
+接下来我们来聊一聊持久化除了cache()这种的其他持久化方法
+我们还可以使用persist方法指定其他形式的操作
+
+我们先来一个代码进行展示一下如何设置 
+val rdd1 = sc.txttFile("hdfs://node1:9000/hello.txt").persist(StorageLevel.MEMORY_AND_DISK_SER)
+是的，就这样子设置
+然后再来让我们认识一下持久化的级别都有哪些？
+```
+
+持久化级别列表：
+
+![img](https://pic2.zhimg.com/80/v2-4268d3777c1f10c76cd19f238ef2c499_720w.jpg)
+
+```text
+接下来让我们聊一聊该如何设置这些级别，也就是如何选择一种最合适的的持久化策略。
+
+1.默认情况下，性能最高的的当然是MEMORY_ONLY，但是前提是你的内存足够大，可以绰绰有余的存放下整个rdd的所有数据。
+因为不进行序列化和反序列化操作，就避免了这部分的性能开销，对这个rdd的后续算子操作，都是基于纯内存中的数据的操作。
+不需要从磁盘文件中读取数据，性能最高，而且不需要复制一份数据副本，并远程传送到其他节点上，但是这里要注意的时候，在
+实际的生产环境中，恐怕能够直接用到这种常见还是有限的，如果rdd中的数据较多的时候，比如有几十亿，直接用这种持久化级别
+会导致jvm的oom内存溢出。
+
+2.如果上述使用MEMORY_ONLY级别时发生了内存溢出，那么建议尝试使用MEMORY_ONLY_SER级别，该级别会将rdd数据序列化后
+再保存到内存中，此时每个partition仅仅是一个字节数组而已，大大减少了对象数量，并降低了内存占用，这种级别比MEMORY_ONLY
+多出来的性能开销，主要就是序列化和反序列化的开销，但是后续算子可以基于纯内存进行操作，因此性能总体还是可以的，此外，
+可能发生的问题同上，如果rdd中的数量过多的话，还是有可能导致OOM内存溢出。
+
+3.如果纯内存的级别都无法使用，那么建议使用MEMORY_AND_DISK_SER策略，而不是MEMORY_AND_DISK策略，因为既然到了这一步
+就说明rdd的数量很大，内存无法完全放下，序列化后的数据比较小，可以节省内存和磁盘的空间开销，同时该策略优先尽量尝试将数据
+缓存在内存中，内存放不下，然后再写入磁盘中。
+
+注意：通常不建议使用DISK_ONLY和后缀为2的级别：因为完全基于磁盘文件进行数据的读写，会导致性能急剧降低，有时还不如重新
+计算一次所有的rdd，后缀为2的级别，必须将所有数据都复制一份副本，并发送到其他节点上，数据复制以及网络传输会导致较大的
+性能开销，除非是要求作业的高可用性，否则不建议，其实在实际中，也没人使用。
+```
+
+#### **原则四：尽量避免使用shuffle类算子**
+
+```text
+如果有可能的情况下，我们尽量避免使用shuffle类的算子，我们都是在spark的运行过程中，shuffle算子会从多个节点上
+将key拉到同一个节点上，进行聚合或者join操作，在这个过程中，会产生大量的网络磁盘IO，所以我们要尽量避免，以减少磁盘IO的
+开销。
+举个例子：
+
+val rdd3= rdd1.join（rdd2)
+在这个过程中会把其他节点上的key通过网络拉到一个节点上，这是错误的。
+
+遇到这种问题，我们就可以使用广播变量的方式
+比如：
+val rdd2Data = rdd2.collect()
+val rdd2DataBroadcast = sc.broadcast(rdd2Data)
+```
+
+#### **原则五：使用map-side预聚合的shuffle操作**
+
+```text
+ 当然了，在原则四的基础上，我们可能有时候根本无法避免使用shuffle操作，那么这个时候我们就使用预聚合的shuffle操作算子
+比如我们优先使用reduceBykey，而不是使用groupBykey算子
+
+怎么理解呢？我们要从reduceBykey和gropBykey的执行过程来说明这个过程。
+
+我们先说groupBykey操作，它是将其他节点上的数据先传输到reduce端，然后进行聚合的操作
+然后是reduceBykey是现在Map端进行先聚合，然后再传输到reduce端
+读者发现了没？
+groupBykey是将全量的数据进行传输，也就是原始数据进行传输
+而reduceBykey呢？他是将聚合后的数据传输，这样子实际上经过了聚合之后，数据量已经缩小了很大，极大的减少了网络的传输IO
+通过这样方式，我们在无法避免使用shuffle操作算子的情况下，我们使用了一种更优化的方法来执行。
+```
+
+#### **原则六：使用高性能的算子**
+
+```text
+ 在原则五的基础上，我们总结了一些算子是比较高性能的，我们优先选择这些高性能的算子操作
+第一个就是优先使用reduceBykey，而不是使用groupBYkey
+第二个使用MapPartitions替代普通的map操作
+我们知道map是对数据的每一条进行处理，比如我们有这么一个场景，我们需要把数据写入到mysql中，如果我们使用map操作，我们则需要
+一条一条的插入，这会产生大量的数据库链接操作，但是使用MapPartitons的时候，我们可以一个分区一个分区的进行插入mysql，操作
+量一下子就小了，但是也需要注意点的就是，因为MapPartions操作是进行分区操作，所以会产生内存溢出的问题，所以，我们在我们内存
+够用的时候使用MapPartitions更优于使用Map
+第三个使用foreach Partitions代替foreache
+这个其实和第二个及其相似，也就是我们能够在批量处理的时候就尽量使用批量处理的函数，而不是使用单个出来的函数
+
+第四个使用filter之后进行coalesce操作
+这里要说明一下coalesce和repartition操作都是进行分区操作
+我们在使用filter通常是过滤操作，于是数据量就减少了，但是分区这个分区并没有减少，所以，我们这里减少分区，则会优化一定的性能
+一般建议，使用coalesce来减少分区，使用repartition来增加分区
+
+第五个使用repartitionAndSortWithinPartitions替代repartition与sort类操作
+因为这两个操作都是同样的操作，但是官方建立使用前者更好
+```
+
+#### **原则六：广播大变量**（中型变量）
+
+```text
+比如我们这里有一个场景
+
+val list1 = ... 
+rdd1.map(x=>x.list1)
+
+假设上面的list1的数量级别为100M或者更大比如1个G，那么如果按照上面的代码来看的话，因为list1是在driver端来形成的
+当每个Executor中的task要使用的时候，就需要把list1中的数据传输到每一个task中，我们知道，对于一个Executor来说
+它的内部可能被分配多个task，于是乎，每一个task需要一份数据，那么这个数据就被传输了和task数量级别的数据
+比如一个Exector中有3个task，而list1中的数据为1个G，这个时候，我们就要传输3个G的大小，到Exector中，数量增大了很多
+尤其是在内存不是那么大的情况下，这个内存溢出的可能性非常大。
+
+所以针对这种情况，我们使用广播变量就会减少数据传输
+比如下面这种写法：
+val list1 = ...
+val listBradcast = sc.broadcast(list1)
+rdd1.map(x=>x.list1.value)
+
+在这种情况下，list1这个数据只会传输到Executor中保留一份，其他的所有task共享这一份数据，于是就跟task的个数无关，
+原先传输3个G的情况下， 这个时候只会传输1个G。
+数据量的减少就会减少网络传输，就会增加算子的执行时间。
+```
+
+#### 原则八：使用Kryo优化序列性能
+
+```text
+上面我们我们可以使用广播变量将数据给广播给Executor，以减少数据量的传输，但是实际上，spark默认就是
+将数据进行序列化，那么默认情况下spark使用的是Java的序列化机制，如果这个时候一种更好的序列化方式岂不是更好吗？
+是的，在spark的官方文档上，也就是我前言中写到的官网的文档地址中，官方建议是用Kryo这种序列化的算法更好。
+
+那么怎么设置这种呢？
+
+val conf = new SparkConf().setMaster(..).setAppName(..)
+
+zconf.set("spark.serializer", "org.apache.spark.serializer.KryoSerizlizer")  # 这里设置
+
+# 在某种情况下比如我们上面的注册自定义的，则可以这样设置
+
+conf.registerKryoClasses(Array(classOf[MyClass], classOf[Myclass2]))
+
+建议：在写spark代码的时候就直接先设置上，管他用不用
+```
+
+#### **原则九：优化数据结构**
+
+```text
+ 这个规则是官网给出的建议，但是呢，这个比较扯淡，看看就行了
+
+1.能用json字符串的不要用对象表示，因为对象头额外占用16个字节，多个对象就会占用x乘以16个字节，而字符串始终占用40个字节
+2.能不用字符串就用不用字符串，因为字符串占用40个字节，比如 能用 数字1 就不用 字符串 “1“
+3.尽量用数组代码集合类型
+4.上面的嘛看看就行了，你说不用对象，那么面向对象的思想何在，代码的可读性都没有了，所以看一看注意一下即可
+```
+
+#### **原则十：尽可能的数据本地化**
+
+### 常用Conf参数
+
+#### spark.default.parallelism
+
+用户设置每个Stage的默认Task数量。这个参数很重要，会直接影响Spark作业性能。
+
+参数调优建议：Spak作业的默认task数量为500~1000个较为合适。
+
+如果不去设置这个参数，那么此时就会导致Spark自己根据底层HDFS的block数量来设置task的数量，默认是一个HDFS blocki对应一个task。通常来说，Spark默认设置的数量是偏少的(比如就几十个task),如果task数量偏少的话，就会导致你前面设置好的Executor的参数都前功尽弃。试想一下，无论你的Executor进程有多少个，内存和CPU有多大，但是task只有1个或者10个，那么90%的Executori进程可能根本就没有task执行，也就是白白浪费了资源！
+
+因此Spark?官网建议的设置原则是，设置该参数为`num-executors * executor-cores`的2~3倍较为合适，比如Executor的总CPU core数量为300个，那么设置1000个task是可以的，此时可以充分地利用Spark集的资源。
+
+#### spark.storage.memoryFraction
+
+参数说明：该参数用于设置RDD持久化数据在Executor内存中能占的比例，默认是0.6。也就是说，默认Executor60%的内存，可以用来保存持久化的RDD数据。根据你选择的不同的特久化策略，如果内存不够时，可能数据就不会持久化，或者数据会溢写到磁盘。
+
+参数调优建议：如果Spak作业中，有较多的RDD持久化操作，该参数的值可以适当提高一些，保证持久化的数据能够容纳在内存中。避免内存不够缓存所有的数据，导致数据只能写入磁盘中，降低了性能。但是如果Spark作业中的shuffle类操作比较多，而特久化操作比较少，
+那么这个参数的值适当降低一些比较合适。
+
+此外，如果发现作业由于频繁的gc导致运行缓慢（通过spark web ui可以观察到作业的gc耗时)，意味着task执行用户代码的内存不够用，那么同
+样建议调低这个参数的值。
+
+
+
+更多配置详细见官方配置：https://spark.apache.org/docs/latest/configuration.html
+
+### 数据倾斜
+
+TODO Spark解决数据倾斜
