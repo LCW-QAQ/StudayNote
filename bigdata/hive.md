@@ -133,7 +133,19 @@ hive-site.xml
 >
 > 开发中为了方便，我们通常还是将hiveserver2与metastore部署在一起。
 
+### Metastore编码格式
 
+默认Metastore在mysql建立的表时非`utf-8`字段，会导致中文乱码。
+
+如果下面的配置还是乱码，尝试更改`/etc/my.cnf`配置文件中的全局编码格式为`utf8mb4`/`utf8`。
+
+```sql
+alter table COLUMNS_V2 modify column COMMENT varchar(256) character set utf8;
+alter table TABLE_PARAMS modify column PARAM_VALUE varchar(4000) character set utf8;
+alter table PARTITION_PARAMS modify column PARAM_VALUE varchar(4000) character set utf8 ;
+alter table PARTITION_KEYS modify column PKEY_COMMENT varchar(4000) character set utf8;
+alter table INDEX_PARAMS modify column PARAM_VALUE varchar(4000) character set utf8;
+```
 
 ## 客户端
 
@@ -3289,4 +3301,3 @@ set yarn.app.mapreduce.am.resource.mb=4096;
 set yarn.app.mapreduce.am.command-opts=-Xmx3276M; -- 注：java.opts是memory.mb的80%左右
 set yarn.app.mapreduce.am.resource.cpu-vcores=4; -- MR ApplicationMaster占用的虚拟CPU个数
 ```
-
