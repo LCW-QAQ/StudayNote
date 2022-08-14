@@ -182,7 +182,94 @@ sqoop export \
 
 2、使用sqoop新的API---Hcatalog API将输入导入到hive表中。
 
-## Sqoop增量数据导入
+## Sqoop数据导入
+
+### 导入HDFS
+
+```bash
+sqoop import \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--username root \
+--password 123456 \
+--target-dir /sqoop/result3 \
+--table emp --m 2
+#上述执行报错 错误信息如下
+Import failed: No primary key could be found for table emp. Please specify one with --split-by or perform a sequential import with '-m 1'.
+
+
+
+sqoop import \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--username root \
+--password 123456 \
+--target-dir /sqoop/result3 \
+--fields-terminated-by '\t' \
+--split-by id \
+--table emp --m 2
+
+#请结合一下的日志信息感受如何进行切片的
+BoundingValsQuery: SELECT MIN(`id`), MAX(`id`) FROM `emp`
+Split size: 2; Num splits: 2 from: 1201 to: 1205
+mapreduce.JobSubmitter: number of splits:2
+
+#下面这个命令是错误的  没有指定切割的判断依据
+sqoop import \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--username root \
+--password 123456 \
+--target-dir /sqoop/result3 \
+--fields-terminated-by '\t' \
+--table emp --m 2
+
+#扩展知识点
+关于mr输出的结果文件名称
+
+part-r-00000  r表示reducetask 说明这个mr程序是一个标准的两个阶段的程序
+part-m-00000  m表示maptask   说明这个mr是一个只有map阶段没有reduce阶段的程序
+```
+
+### 导入Hive
+
+1. 手动建表后导入数据
+
+```bash
+#将关系型数据的表结构复制到hive中
+sqoop create-hive-table \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--table emp_add \
+--username root \
+--password 123456 \
+--hive-table test.emp_add_sp
+
+# 其中 
+--table emp_add为mysql中的数据库sqoopdb中的表   
+--hive-table emp_add_sp 为hive中新建的表名称。如不指定，将会在hive的default库下创建和MySQL同名表
+
+# 导入数据
+sqoop import \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--username root \
+--password 123456 \
+--table emp_add \
+--hive-table test.emp_add_sp \
+--hive-import \
+--m 1
+```
+
+2. 直接导入数据，Sqoop自动为我们建表
+
+```bash
+sqoop import \
+--connect jdbc:mysql://192.168.88.80:3306/userdb \
+--username root \
+--password 123456 \
+--table emp_conn \
+--hive-import \
+--m 1 \
+--hive-database test
+```
+
+### Sqoop增量数据导入
 
 * --check-column 以哪一列的值作为增量的基准
 * --last-value：指定上一次这一列的值是什么
@@ -190,7 +277,7 @@ sqoop export \
     * append模式
     * lastmodified模式
 
-### append
+#### append
 
 - 要求：必须有一列自增的值，按照自增的int值进行判断。
 - 特点：只能导入增加的数据，**无法更新的数据**，即只能追加。
@@ -229,7 +316,7 @@ sqoop import \
 21/10/09 15:03:37 INFO tool.ImportTool: (Consider saving this with 'sqoop job --create')
 ```
 
-### lastmodified
+#### lastmodified
 
 - 要求：**必须包含时间列**，按照数据时间的变化进行判断。
 - 特点：**既可以新增的数据也可以更新的数据**，可以通过**指定--merge-key来更新数据**。
@@ -279,7 +366,7 @@ sqoop import \
 #因此最终我们在lastmodifiedresult文件夹下可以发现id=1的name已经得到修改，同时新增了id=6的数据
 ```
 
-### Custom Condition
+#### Custom Condition
 
 自定义条件过滤实现增量数据导入，实际开发中使用最多的就是这种方式。
 
