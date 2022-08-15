@@ -723,6 +723,10 @@ set hive.optimize.bucketmapjoin=true;
 set hive.auto.convert.sortmerge.join=true;
 # 开开启SMB(Sort-Merge-Bucket) Join优化，先排序再合并全部在map端完成，避免大量数据到reduce端造成数据倾斜，减少shuffle的数据量
 set hive.optimize.bucketmapjoin.sortedmerge=true;
+# hive不会检测数据是否有序，通过两个选项，强制hive排序、分桶。
+set hive.enforce.bucketing=true;
+set hive.enforce.sorting=true;
+
 
 create table user_info_without_bucket
 (
@@ -2826,6 +2830,8 @@ set hive.exec.parallel.thread.number=8;
 > 开启自动mapjoin，hive可以自动进行mapjoin操作，缓存小表数据，map-task并行处理大表数据。
 >
 > 因此在实际使用中，只要根据业务把握住小表的阈值标准即可，hive会自动帮我们完成mapjoin，提高执行的效率。
+>
+> hive0.7版本之前，使用需要手动提示hive，`select /*+ mapjoin(A)*/ f.a,f.b from A t join B f on ( f.a=t.a and f.ftime=20110802)`
 
 ```sql
 # hive2.0之前需要配置以下参数，hive2.0即以后版本，已经自动开启
@@ -2845,7 +2851,12 @@ set hive.auto.convert.join.noconditionaltask.size=512000000;
 
 #### BucketMapJoin
 
-> 利用分桶表优化大表join大表性能，要求分桶字段=Join字段，桶的个数相等或者成倍数。
+> 两个表join的时候，小表不足以放到内存中，但是又想用map side join这个时候就要用到bucket Map join。其方法是两个join表在join key上都做hash bucket，并且把你打算复制的那个（相对） 小表的bucket数设置为大表的倍数。这样数据就会按照key join，做hash bucket。小表依然复制到 所有节点，Map join的时候，小表的每一组bucket加载成hashtable，与对应的一个大表bucket做 局部join，这样每次只需要加载部分hashtable就可以了。
+>
+> 1. set hive.optimize.bucketmapjoin = true;
+> 2. 一个表的bucket数是另一个表bucket数的整数倍，桶的个数相等或者成倍数。
+> 3. bucket列 == join列
+> 4. 必须是应用在map join的场景中
 >
 > 数据表既分桶又排序时，性能提升最大。
 >
@@ -2877,29 +2888,47 @@ hive.auto.convert.join.noconditionaltask.size=250000000;
 
 SMB是针对bucket mapjoin的一种优化，用于大表join大表
 
-限制条件：
+| bucket mapJoin                             | SMB Join                                                     |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| set hive.optimize.bucketmapjoin = true;    | set hive.optimize.bucketmapjoin = true;  <br />set hive.auto.convert.sortmerge.join=true;  <br />set hive.optimize.bucketmapjoin.sortedmerge = true;  <br />set hive.auto.convert.sortmerge.join.noconditionaltask=true; |
+| 一个表的bucket数是另一个表bucket数的整数倍 | 小表的bucket数=大表bucket数                                  |
+| bucket列 == join列                         | Bucket 列 == Join 列 == sort 列                              |
+| 必须是应用在map join的场景中               | 必须是应用在bucket mapjoin 的场景中                          |
 
-1. 小表的bucket数=大表bucket数
-2. Bucket 列 == Join 列 == sort 列
-3. 必须是应用在bucket mapjoin的场景中
+
+
+**使用SMB Join一定要确保Join的列有序，否则可能数据不正确。**
+
+hive并不检查两个join的表是否已经做好bucket且sorted，**需要用户自己去保证join的表数据 sorted**，否则可能数据不正确。 
+
+有两个办法： 
+
+1. hive.enforce.sorting 设置为 true。**开启强制排序**时，插数据到表中会进行强制排序，默认 false。 
+2. 插入数据时通过在sql中用distributed c1 sort by c1 或者 cluster by c1
+
+另外，**表创建时必须是CLUSTERED且SORTED**，如下：
+
+```sql
+create table test_smb_2(mid string,age_id string)
+CLUSTERED BY(mid) SORTED BY(mid) INTO 500 BUCKETS;
+```
 
 开启配置
 
-```bash
+```sql
+-- 写入数据强制分桶
+set hive.enforce.bucketing=true;
+-- 写入数据强制排序
+set hive.enforce.sorting=true;
+-- 开启bucketmapjoin
+set hive.optimize.bucketmapjoin = true;
+-- 开启SMB Join
 set hive.auto.convert.sortmerge.join=true;
-set hive.optimize.bucketmapjoin=true;
-set hive.optimize.bucketmapjoin.sortedmerge = true;
 set hive.auto.convert.sortmerge.join.noconditionaltask=true;
+set hive.optimize.bucketmapjoin.sortedmerge = true;
 ```
 
-注意事项：
-
-* hive并不检查两个join的表是否已经做好bucket且sorted，需要用户自己去保证join的表，否则可能数据不正确。有两个办法:
-
-* hive.enforce.sorting 设置为true。
-* 动生成符合条件的数据，通过在sql中用distributed c1 sort by c1 或者 cluster by c1
-* 表创建时必须是CLUSTERED且SORTED，如下 
-    * `create table test_smb_2(mid string,age_id string) CLUSTERED BY(mid) SORTED BY(mid) INTO 500 BUCKETS;`
+开启MapJoin的配置（hive.auto.convert.join和hive.auto.convert.join.noconditionaltask.size），还有限制对桶表进行load操作（hive.strict.checks.bucketing）可以直接设置在hive的配置项中，无需在sql中声明。 自动尝试SMB联接（hive.optimize.bucketmapjoin.sortedmerge）也可以在设置中进行提前配置。
 
 #### 关联优化
 
