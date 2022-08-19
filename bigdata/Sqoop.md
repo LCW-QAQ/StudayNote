@@ -532,3 +532,23 @@ sqoop export \
 --update-key id \
 --update-mode allowinsert
 ```
+
+## 运行--split-by字段为字符串
+
+```bash
+sqoop import -Dorg.apache.sqoop.splitter.allow_text_splitter=true \
+--connect ${url}/${db}?tinyInt1isBit=false \
+--username ${username} \
+--password ${password} \
+--table seewo_system_info \
+--hive-import 
+--hive-database seewo \
+--hive-overwrite \
+--bindir . \
+--delete-target-dir \
+--hive-table seewo_class_seewo_system_info_text \
+--hive-drop-import-delims --autoreset-to-one-mapper --verbose
+```
+
+
+
