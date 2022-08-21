@@ -1,0 +1,6 @@
+Exceeded limit of 100 open writers for partitions/buckets
+
+this issue just came up again. A user saw that their query was failing with Exceeded limit of 100 open writers for partitions/buckets, but then succeeded. When a query writes to a bucketed table, Presto creates one writer per bucket. If a query produces 5 dynamic partitions each with 8,192 buckets, Presto needs 40,960 writers. With 100 writers per node limit, this requires 410 heathy workers in the cluster. Hence, the query would succeed on a large cluster, but fail on a smaller one.
+
+每个节点都配置：
+hive.max-partitions-per-writers=300
