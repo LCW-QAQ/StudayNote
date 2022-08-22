@@ -2701,7 +2701,10 @@ SET hive.optimize.index.filter=true --开启 hive的自动使用索引
 set hive.optimize.index.filter=true;
 -- 2、创建表并制定构建索引
 create table tb_sogou_orc_index
-stored as orc tblproperties ("orc.create.index"="true")
+stored as orc tblproperties 
+	("orc.create.index"="true" -- 使用orc索引
+     'orc.stripe.size'='10485760',
+    'orc.row.index.stride'='10000') 	--索引条目之间的行数（必须> = 1000）
 as select * from tb_sogou_source
 distribute by stime
 sort by stime;
