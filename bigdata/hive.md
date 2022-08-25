@@ -228,6 +228,15 @@ Beeline --> HieveServer2 --> MetaStore --> Mysql
 
 连接后需要输入用户名，输入一个在hdfs中有数据权限的用户名即可，密码可以跳过直接回车。
 
+### 执行SQL脚本
+
+在shell中执行sql的方式有两种：
+
+1. bin/hive -e -S "sql语句"
+2. bin/hive -f -S xxx.sql文件
+
+加上`-S`选项就不会输出MR的执行过程了，可以减少日志输出。
+
 ## 常见DDL
 
 Hive中的**ALTER DATABASE**语句用于更改与Hive中的数据库关联的元数据。
