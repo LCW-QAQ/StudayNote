@@ -59,5 +59,5 @@ select group_concat(alter_sql separator '')
 from (select concat('alter table ', TABLE_NAME, ' set TBLPROPERTIES("comment"="', TABLE_COMMENT, '");') as alter_sql
       from information_schema.tables b
       where b.TABLE_SCHEMA = 'nev'
--- and b.TABLE_NAME in ('t_goods_collect');
+-- and b.TABLE_NAME in ('t_goods_collect'); -- 指定要生成注释的表
      ) _temp;
