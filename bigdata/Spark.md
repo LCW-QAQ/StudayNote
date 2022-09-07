@@ -241,6 +241,18 @@ spark.eventLog.compress 	true
 
 
 
+配置Spark Yarn Jars
+
+如果不配置Spark默认会将`$SPARK_HOME/jars`下的所有jar包上传到分布式缓存中。
+
+为了不要每次都上传大量jar包，手动将`$SPARK_HOME/jars`下的jar包全部上传到hdfs上。
+
+然后在`spark-defaults`中添加配置`spark.yarn.jars hdfs://hadoop001:9000/spark-yarn-jars/*.jar`。
+
+以后执行Spark程序就不会再从本地上传Spark Jar包了。
+
+
+
 配置log4j.properties 文件 [可选配置]
 
 `cp log4j.properties.template log4j.properties`
