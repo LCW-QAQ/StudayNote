@@ -227,6 +227,8 @@ hadoop fs -chmod 777 /sparklog
 
 `cp spark-defaults.conf.template spark-defaults.conf`
 
+注意Spark log虽然存储在HDFS上，但是必须使用Spark History Server才能访问。
+
 ```
 # 2. 修改内容, 追加如下内容
 # 开启spark的日期记录功能
@@ -461,6 +463,18 @@ spark-submit --master yarn --deploy-mode client|cluster /opt/spark/examples/src/
 这4个客户端工具的参数基本通用.
 
 以spark-submit 为例：
+
+| 参数                     | 描述                                                         | 可选值                                     |
+| ------------------------ | ------------------------------------------------------------ | ------------------------------------------ |
+| --class                  | Spark 程序中包含主函数的类                                   |                                            |
+| --master                 | Spark 程序运行的模式(环境)                                   | 模式：local[*]、spark://linux1:7077、 Yarn |
+| --executor-memory 1G     | 指定每个 executor 可用内存为 1G                              |                                            |
+| --total-executor-cores 2 | 指定所有executor使用的cpu核数为2个。                         |                                            |
+| --executor-cores         | 指定每个executor使用的cpu核数                                |                                            |
+| application-jar          | 打包好的应用 jar，包含依赖。这 个 URL 在集群中全局可见。 比 如 hdfs:// 共享存储系统，如果是file:// path，那么所有的节点的 path 都包含同样的 jar。 |                                            |
+| application-arguments    | 传给 main()方法的参数                                        |                                            |
+
+
 
 ```
 Usage: spark-submit [options] <app jar | python file | R file> [app arguments]
