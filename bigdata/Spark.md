@@ -3850,7 +3850,7 @@ object WindowWaterMarkDemo {
 
             val dataWithTime = fileDs.map(MapFunction {
                 val fields = it.split(" ")
-                // Spark要求水位线不许是Timestamp类型
+                // Spark要求水位线必须是Timestamp类型
                 Tuple2.apply(Timestamp(fields[0].toLong()), fields[1])
             }, Encoders.tuple(Encoders.TIMESTAMP(), Encoders.STRING()))
                 .toDF("timestamp", "word")
@@ -4195,12 +4195,14 @@ join b on a.id = b.id and a.id < 2
 #### HashShuffle
 
 > 未优化的HashShuffle每个Executor内的Task都会对数据分组, 然后写入到Reduce端(相当于没有做mapjoin), 浪费性能导致多次网络IO
+>
+> 早期的HashShuffle会根据ReduceTask的数量, 创建多个bucket file, 整个计算任务会创建 M * R个文件, 创建文件数量较大, 导致IO性能较低.
 
 ![image-20220628194906668](Spark.assets/image-20220628194906668.png)
 
 > 优化后的HashShuffle
 >
-> 在Executor内部采用了MapJoin, 先将数据在同一个Executor的Map端进行分组汇聚, 最后发送给Reduce, 减少网络IO开销.
+> 在Executor内部会将桶一个Core上的Map输出到同一个文件中, 整个计算任务会创建Core * R个文件, 创建文件的数量减少, 性能相比未优化前有所提升, 但是任然会创建大量文件, 性能较低.
 
 ![image-20220628195109194](Spark.assets/image-20220628195109194.png)
 
@@ -4211,6 +4213,9 @@ join b on a.id = b.id and a.id < 2
 每个Task会对数据进行当前分区内进行一下操作:
 
 1. 数据被写入内存(Map or Array)
+    1. 如果是聚合类算子, 列如`reduceByKey`, 使用Map结构存储, 数据在HashMap中进行排序聚合, 同时写入内存溢写到磁盘.
+    2. 如果是非集合类算子, 例如`jion`, 使用Array结构存储, 直接写入内存溢写到磁盘.
+
 2. 然后对数据进行分组与排序
 3. 最后将数据汇聚一个文件中, 且会创建一个索引文件, 里面记录了每个分区的数据段.
 4. Reduce端主动拉取Task的数据, 通过索引文件拉取当前分组内的数据.

@@ -339,13 +339,8 @@ over()括号内若不写，则意味着窗口函数基于满足where条件的所
 ### 数据范围
 
 * rows between 2 preceding and current row 取本行和前面两行
-
 * rows between unbounded preceding and current row 取本行和之前所有的行
-
 * rows between current row and unbounded following 取本行和之后所有的行
-
 * rows between 3 preceding and 1 following 从前面三行和下面一行，总共五行
-
 * 当order by后面没有rows between时，窗口规范默认是取本行和之前所有的行
-
 * 当order by和rows between都没有时，窗口规范默认是分组下所有行，即rows between unbounded preceding and unbounded following
