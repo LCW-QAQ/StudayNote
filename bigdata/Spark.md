@@ -1137,6 +1137,54 @@ if __name__ == '__main__':
     df.selectExpr("udf1(num)").show()
 ```
 
+* 装饰器注册
+
+只能在DSL方法中使用，在sql语句中无法使用
+
+```python
+# 导入window类 定义窗口
+from pyspark.sql import SparkSession, Window, functions as F
+from pyspark.sql.types import *
+
+# 1、生成SparkSession对象
+ss = SparkSession.builder.getOrCreate()
+# 2、获取sparkcontext对象
+sc = ss.sparkContext
+
+# 3、 读取文件数据转为rdd
+rdd = sc.textFile('/student')
+# 4、查看rdd数据
+# 5、对每行数据进行切割
+rdd_map = rdd.map(
+    lambda x: [int(x.split(',')[0]), x.split(',')[1], x.split(',')[2], int(x.split(',')[3]), x.split(',')[4]])
+
+# 6、rdd转df
+# 7、定义 表信息
+schema_type = StructType(). \
+    add('id', IntegerType()). \
+    add('name', StringType()). \
+    add('gender', StringType()). \
+    add('age', IntegerType()). \
+    add('cls', StringType())
+
+df = rdd_map.toDF(schema_type)
+
+df.show()
+
+# 自定义函数
+@F.udf(returnType=StringType())
+def func(x,y):
+    # x,y 接受传递字段的数据
+    # 每次接受一行数据
+    data = x+y
+    return data
+
+
+# DSL方法中使用
+df_new = df.select(func(df['name'],df['gender']))
+df_new.show()
+```
+
 #### udaf
 
 > 通过mapPartitions模拟udaf函数
@@ -1167,6 +1215,80 @@ if __name__ == '__main__':
     # 模拟udaf聚合函数操作
     print(df.rdd.repartition(1).mapPartitions(process) \
           .collect())
+```
+
+> 通过pandas模拟udaf函数
+
+* pandas的dataframe和spark的dataframe的转化
+
+* pandas的数据在计算使用的是单机资源进行计算，想要进行分布式计算，利用多台计算机资源，此时就可以将pandas的dataframe转化为spark的dataframe
+
+```python
+# 导入window类 定义窗口
+from pyspark.sql import SparkSession, Window, functions as F
+from pyspark.sql.types import *
+import pandas as pd
+
+# 1、生成SparkSession对象
+ss = SparkSession.builder.config('spark.sql.execution.arrow.pyspark.enabled','true').getOrCreate()
+# 2、获取sparkcontext对象
+sc = ss.sparkContext
+
+# 3、 读取文件数据转为rdd
+rdd = sc.textFile('/student')
+# 4、查看rdd数据
+# 5、对每行数据进行切割
+rdd_map = rdd.map(
+    lambda x: [int(x.split(',')[0]), x.split(',')[1], x.split(',')[2], int(x.split(',')[3]), x.split(',')[4]])
+
+# 6、rdd转df
+# 7、定义 表信息
+schema_type = StructType(). \
+    add('id', IntegerType()). \
+    add('name', StringType()). \
+    add('gender', StringType()). \
+    add('age', IntegerType()). \
+    add('cls', StringType())
+
+df = rdd_map.toDF(schema_type)
+
+df.show()
+
+
+# 自定义函数
+# 使用panda实现udaf
+# 需要按照固定格式
+# pandas自定义函数的装饰器
+@F.pandas_udf(returnType=FloatType())  # returnType=FloatType 指定返回类型
+def func(data: pd.Series) -> float: #  -> 指定返回的结果类型
+    # data 是接受参数,接受一列数据， 冒号后是指定接受的的类型是seriess类型
+    # 按照pandas的series类型操作data
+    return  data.mean()
+
+# 注册到spark中使用
+# 第一个参数  指定注册的函数名
+# 第二个参数  指定自己定义的函数名
+# 注册完成后会返回注册的函数
+avg_it = ss.udf.register('avg_it', func)
+
+# DSL方法中使用
+df_new = df.select(avg_it(df['age']))
+df_new.show()
+
+# SQL中使用
+df.createTempView('stu')
+df_new2 = ss.sql('select avg_it(age) from stu ')
+df_new2.show()
+```
+
+* arrow框架
+
+    * Apache Arrow 是一种内存中的列式数据格式，用于Spark中，以在JVM和Python进程之间有效地传输数据。目前这对使用 Pandas/NumPy 数据的 Python 用户最有益，提升传输速度。
+    * pip install pyspark[sql] 下载
+    * pip install pyspark[sql] -i  https://pypi.mirrors.ustc.edu.cn/simple/ 
+
+```python
+spark = SparkSession.builder.config('spark.sql.execution.arrow.pyspark.enabled','true').getOrCreate()
 ```
 
 ### 共享变量与累加变量
