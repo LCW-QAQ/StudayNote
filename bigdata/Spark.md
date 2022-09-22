@@ -4179,9 +4179,10 @@ if __name__ == '__main__':
 
 ````bash
 $SPARK_HOME/sbin/start-thriftserver.sh \
---hiveconf hive.server2.thrift.port=10001 \
---hiveconf hive.server2.thrift.bind.host=cdh2 \
---master local[*]
+        --master yarn \
+        --hiveconf hive.server2.thrift.port=10001 \
+        --hiveconf hive.server2.thrift.bind.host=node1 \
+        --conf spark.sql.warehouse.dir=hdfs://hadoop102:8020/user/hive/warehouse
 ````
 
 4. spark-thriftserver详细参数
