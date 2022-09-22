@@ -71,6 +71,7 @@ hive-site.xml
     <!-- jdbc 连接的 URL -->
     <property>
         <name>javax.jdo.option.ConnectionURL</name>
+        <!-- 记得在mysql中创建对应数据库 -->
         <value>jdbc:mysql://domain:3336/hive?useSSL=false</value>
     </property>
     <!-- jdbc 连接的 Driver-->
