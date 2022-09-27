@@ -119,6 +119,16 @@ hive-site.xml
 <!--        <name>hive.server2.thrift.port</name>-->
 <!--        <value>10000</value>-->
 <!--    </property>-->
+    <!-- 连接zk -->
+    <!-- <property>
+        <name>hive.zookeeper.quorum</name>
+        <value>hadoop102,hadoop103,hadoop104</value>
+    </property>
+    <property>
+        <name>hive.zookeeper.client.port</name>
+        <value>2181</value>
+    </property> -->
+
 </configuration>
 ```
 
