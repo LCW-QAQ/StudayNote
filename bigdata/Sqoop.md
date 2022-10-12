@@ -2,31 +2,88 @@
 
 ## 部署
 
-下载sqoop安装包，http://archive.cloudera.com/cdh5/cdh/5/sqoop-1.4.6-cdh5.14.0.tar.gz。
+> **老版本**：
+>
+> 下载sqoop安装包，http://archive.cloudera.com/cdh5/cdh/5/sqoop-1.4.6-cdh5.14.0.tar.gz。
+>
+> 将安装包上传到linux中, 并解压
+>
+>  建议放置在hive和hadoop同服务器的路径下
+>
+> `tar -zxvf /export/software/sqoop-1.4.6-cdh5.14.0.tar.gz -C /export/server/`
+>
+> 创建软连接
+>
+> `ln -s /export/server/sqoop-1.4.6-cdh5.14.0/ /export/server/sqoop`
+>
+> 配置环境变量
+>
+> `vi /etc/profile添加export SQOOP_HOME=/export/server/sqoop`
+>
+> 验证启动 :
+>
+> ```bash
+> bin/sqoop list-databases \
+> --connect jdbc:mysql://localhost:3306/ \
+> --username root --password 123456
+> ```
+>
+> 本命令会列出所有mysql的数据库。如果可以显示, 整个Sqoop安装工作完成。
 
-将安装包上传到linux中, 并解压
+### 上传sqoop到远程服务器
 
- 建议放置在hive和hadoop同服务器的路径下
+### 解压安装包到指定/export/server
 
-`tar -zxvf /export/software/sqoop-1.4.6-cdh5.14.0.tar.gz -C /export/server/`
-
-创建软连接
-
-`ln -s /export/server/sqoop-1.4.6-cdh5.14.0/ /export/server/sqoop`
-
-配置环境变量
-
-`vi /etc/profile添加export SQOOP_HOME=/export/server/sqoop`
-
-验证启动 :
-
-```bash
-bin/sqoop list-databases \
---connect jdbc:mysql://localhost:3306/ \
---username root --password 123456
+```sh
+cd /root/insurance/4_software/
+tar zxvf sqoop-1.4.7.bin_hadoop-2.6.0.tar.gz -C /export/server/
 ```
 
-本命令会列出所有mysql的数据库。如果可以显示, 整个Sqoop安装工作完成。
+### 修改安装包名
+
+```sh
+cd /export/server/
+mv sqoop-1.4.7.bin__hadoop-2.6.0/ sqoop
+```
+
+### 修改配置文件名
+
+```sh
+cd /export/server/sqoop/conf/
+mv sqoop-env-template.sh sqoop-env.sh
+```
+
+### 修改配置文件信息
+
+![image-20220813182740509](Sqoop.assets/image-20220813182740509-16655449769061.png)
+
+### 复制hive的驱动包
+
+* sqoop连接mysql 需要mysql驱动包
+* sqoop连接hive  需要hive驱动包
+
+```sh
+cp /export/server/hive/lib/mysql-connector-java-5.1.32.jar /export/server/sqoop/lib/
+cp /export/server/hive/lib/hive-exec-3.1.2.jar /export/server/sqoop/lib/
+cp /export/server/hive/lib/commons-lang-2.6.jar /export/server/sqoop/lib/
+```
+
+### 将sqoop指定添加系统变量
+
+```sh
+export SQOOP_HOME=/export/server/sqoop
+export PATH=$PATH:$SQOOP_HOME/bin:$SQOOP_HOME/sbin
+export HCAT_HOME=/usr/hive/hcatalog
+export PATH=$PATH:$HCAT_HOME/bin
+```
+
+![image-20220813183329455](Sqoop.assets/image-20220813183329455-16655450608092.png)
+
+* 验证
+
+```sh
+ sqoop list-databases  --connect jdbc:mysql://node1:3306  --username root --password 123456
+```
 
 ## 常用命令
 
