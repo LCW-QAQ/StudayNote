@@ -1784,9 +1784,7 @@ public void testSelectBroadcast(){
 
 
 
-# 第07章 启动ShardingSphere-Proxy
-
-## 1、获取
+# 第07章 启动	
 
 目前 ShardingSphere-Proxy 提供了 3 种获取方式：
 

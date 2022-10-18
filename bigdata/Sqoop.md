@@ -99,7 +99,7 @@ export PATH=$PATH:$HCAT_HOME/bin
 | --create-hcatalog-table                                      | 此选项指定在导入数据时是否应自动创建HCatalog表。表名将与转换为小写的数据库表名相同。 |
 | --hcatalog-storage-stanza 'stored as orc  tblproperties ("orc.compress"="SNAPPY")' \ | 建表时追加存储格式到建表语句中，tblproperties修改表的属性，这里设置orc的压缩格式为SNAPPY |
 | -m                                                           | 指定并行处理的MapReduce任务数量。  -m不为1时，需要用split-by指定分片字段进行并行导入，尽量指定int型。 |
-| --split-by id                                                | 如果指定--split by, 必须使用$CONDITIONS关键字, 双引号的查询语句还要加\。当--m参数>1时，必须通过--split-by指定主键，以便sqoop根据指定主键，分割数据交给多个map读取。 |
+| --split-by id                                                | 如果指定--split by, 必须使用$CONDITIONS关键字, 双引号的查询语句还要加\。当--m参数>1时，必须通过--split-by指定主键，以便sqoop根据指定主键，分割数据交给多个map读取。  <br />--split-by对数字类型字段支持较好，如果字段是字符串类型需要加上-Dorg.apache.sqoop.splitter.allow_text_splitter=true选项。 |
 | --hcatalog-e-keys  --hcatalog-partition-values               | keys和values必须同时存在，相当于指定静态分区。允许将多个键和值提供为静态分区键。多个选项值之间用，（逗号）分隔。比如：  --hcatalog-partition-keys year,month,day  --hcatalog-partition-values 1999,12,31 |
 | --null-string '\\N'  --null-non-string '\\N'                 | 指定mysql数据为空值时用什么符号存储，null-string针对string类型的NULL值处理，--null-non-string针对非string类型的NULL值处理 |
 | --hive-drop-import-delims                                    | 设置无视字符串中的分割符（hcatalog默认开启）                 |
