@@ -166,11 +166,15 @@ export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
 <!-- Put site-specific property overrides in this file. -->
 
 <configuration>
-  <!-- 设置SNN辅助节点，运行机器信息 -->
-  <property>
-    <name>dfs.namenode.secondary.http-address</name>
-    <value>hadoop-2:9868</value>
-  </property>
+    <!-- 设置SNN辅助节点，运行机器信息 -->
+    <property>
+        <name>dfs.namenode.secondary.http-address</name>
+	    <value>hadoop-2:9868</value>
+    </property>
+    <property>
+    	<name>dfs.replication</name>
+	    <value>1</value>
+    </property>
 </configuration>
 ```
 

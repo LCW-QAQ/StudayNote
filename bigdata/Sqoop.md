@@ -498,7 +498,7 @@ sqoop import \
 --incremental lastmodified \
 --last-value "2022-06-13 16:26:02" \
 --m 1 \
---merge-key id 
+--merge-key id
 
 #由于merge-key这种模式是进行了一次完整的mapreduce操作，
 #因此最终我们在lastmodifiedresult文件夹下可以发现id=1的name已经得到修改，同时新增了id=6的数据
